@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>CukeGuard Dashboard</title>
+<link rel="stylesheet" href="/static/style.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">🥒</span>
+      <div>
+        <h1>CukeGuard</h1>
+        <p id="batch-label">Loading batch…</p>
+      </div>
+    </div>
+    <div class="topbar-actions">
+      <div class="mode-badge" id="system-mode">
+        <span class="mode-indicator"></span>
+        <span><strong id="system-mode-label">SIMULATION MODE</strong><small id="system-mode-detail">Sensors, camera, controls and SMS are simulated</small></span>
+      </div>
+      <button id="manual-scan-btn" class="btn-primary">Run Demo Scan</button>
+    </div>
+  </header>
+
+  <main class="grid">
+    <section class="status-banner" id="status-banner">
+      <span class="status-dot" id="status-dot"></span>
+      <span id="status-text">Reading climate…</span>
+    </section>
+
+    <section class="cards">
+      <div class="metric-card">
+        <span class="metric-label">Temperature</span>
+        <span class="metric-value" id="metric-temp">--°C</span>
+        <span class="metric-target" id="target-temp">Target 10–12.5°C</span>
+      </div>
+      <div class="metric-card">
+        <span class="metric-label">Humidity</span>
+        <span class="metric-value" id="metric-humidity">--%</span>
+        <span class="metric-target" id="target-humidity">Target 90–95% RH</span>
+      </div>
+      <div class="metric-card">
+        <span class="metric-label">Good / Bad Inside</span>
+        <span class="metric-value" id="metric-condition">--/--</span>
+        <span class="metric-target">latest scan</span>
+      </div>
+      <div class="metric-card">
+        <span class="metric-label">Freshness Goal</span>
+        <span class="metric-value">10–18 d</span>
+        <span class="metric-target">Target only; not a measured forecast</span>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-heading">
+        <div>
+          <h2>Storage Climate</h2>
+          <p class="panel-subtitle">Automatic monitoring against the storage limits</p>
+        </div>
+        <span class="range-chip" id="climate-range-chip">10–12.5°C · 90–95% RH</span>
+      </div>
+      <canvas id="climate-chart" height="90"></canvas>
+      <p class="log-line" id="correction-log">Waiting for the first sensor reading.</p>
+      <p class="capability-note" id="capability-note">Cooling and misting are simulated. Heating and dehumidification hardware are not configured.</p>
+    </section>
+
+    <section class="panel">
+      <h2>Owner Alerts (SMS)</h2>
+      <div class="table-wrap">
+        <table id="alerts-table">
+          <thead>
+            <tr><th>Time</th><th>Phone</th><th>Bad Count</th><th>Status</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2 id="vision-title">Latest Scan (Simulated)</h2>
+      <div class="ripeness-summary" id="ripeness-summary"></div>
+      <div class="table-wrap">
+        <table id="sample-table">
+          <thead>
+            <tr>
+              <th>Pos (mm)</th><th>Class</th><th>Condition</th><th>Confidence</th>
+              <th>Hue</th><th>Texture</th><th>Demo estimate (d)</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Scan History</h2>
+      <div class="table-wrap">
+        <table id="scan-history-table">
+          <thead>
+            <tr><th>Time</th><th>Trigger</th><th>Detected</th><th>Good</th><th>Bad</th><th>Ripe</th><th>Near-ripe</th><th>Unripe</th><th>Spoiled</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
