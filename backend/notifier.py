@@ -29,17 +29,22 @@ def send_sms(phone_number: str, message: str) -> str:
     return "sent"
 
 
-def notify_bad_condition(db, batch, scan_session_id: int, bad_count: int) -> AlertLog | None:
+def notify_bad_condition(
+    db, batch, scan_session_id: int, bad_cucumber_numbers: list[int]
+) -> AlertLog | None:
     """Called right after a scan finds one or more 'bad' cucumbers.
     Sends (simulated) SMS to the batch's owner_phone and logs it so the
     touchpad can show an alert history."""
-    if bad_count <= 0:
+    if not bad_cucumber_numbers:
         return None
 
     phone = batch.owner_phone or "UNSET-NUMBER"
+    cucumber_list = ", ".join(f"#{number}" for number in bad_cucumber_numbers)
     message = (
-        f"CukeGuard Alert: {bad_count} spoiled cucumber(s) detected in "
-        f"{batch.batch_code}. Please remove from storage."
+        f"CukeGuard Alert: Batch B-{batch.id:04d} ({batch.batch_code}), "
+        f"Scan S-{scan_session_id:04d}: bad cucumber(s) {cucumber_list}, "
+        "numbered right-to-left. "
+        "Please remove these from storage."
     )
     status = send_sms(phone, message)
 
@@ -49,7 +54,7 @@ def notify_bad_condition(db, batch, scan_session_id: int, bad_count: int) -> Ale
         sent_at=datetime.utcnow(),
         phone_number=phone,
         message=message,
-        bad_count=bad_count,
+        bad_count=len(bad_cucumber_numbers),
         delivery_status=status,
     )
     db.add(alert)

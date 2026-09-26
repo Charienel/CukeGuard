@@ -5,7 +5,7 @@ STORAGE_BATCH -> SENSOR_READING
 """
 from datetime import datetime
 from sqlalchemy import (
-    create_engine, Column, Integer, String, Float, DateTime, ForeignKey
+    create_engine, Column, Integer, String, Float, DateTime, ForeignKey, inspect
 )
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 
@@ -22,6 +22,8 @@ class StorageBatch(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     batch_code = Column(String, unique=True, index=True)
+    cucumber_variety = Column(String, nullable=True)
+    initial_quantity = Column(Integer, nullable=True)
     started_at = Column(DateTime, default=datetime.utcnow)
     ended_at = Column(DateTime, nullable=True)
     target_temp_c = Column(Float, default=11.0)      # midpoint of 10-12.5C target
@@ -31,6 +33,7 @@ class StorageBatch(Base):
 
     sensor_readings = relationship("SensorReading", back_populates="batch")
     scan_sessions = relationship("ScanSession", back_populates="batch")
+    samples = relationship("CucumberSample", back_populates="batch")
     alerts = relationship("AlertLog", back_populates="batch")
 
 
@@ -58,10 +61,6 @@ class ScanSession(Base):
     batch_id = Column(Integer, ForeignKey("storage_batch.id"))
     started_at = Column(DateTime, default=datetime.utcnow)
     trigger_type = Column(String, default="scheduled")  # "scheduled" | "manual"
-    ripe_count = Column(Integer, default=0)
-    near_ripe_count = Column(Integer, default=0)
-    unripe_count = Column(Integer, default=0)
-    spoiled_count = Column(Integer, default=0)
 
     batch = relationship("StorageBatch", back_populates="scan_sessions")
     samples = relationship("CucumberSample", back_populates="scan_session")
@@ -72,7 +71,9 @@ class CucumberSample(Base):
     __tablename__ = "cucumber_sample"
 
     id = Column(Integer, primary_key=True, index=True)
-    scan_session_id = Column(Integer, ForeignKey("scan_session.id"))
+    batch_id = Column(Integer, ForeignKey("storage_batch.id"), index=True)
+    scan_id = Column(Integer, ForeignKey("scan_session.id"), index=True)
+    cucumber_number = Column(Integer, nullable=False)
     track_position_mm = Column(Float)      # position along V-slot track at capture
     bbox_x = Column(Float)
     bbox_y = Column(Float)
@@ -81,10 +82,10 @@ class CucumberSample(Base):
     yolo_confidence = Column(Float)
     hsi_hue_mean = Column(Float)
     lbp_texture_score = Column(Float)
-    ripeness_class = Column(String)        # "ripe" | "near_ripe" | "unripe" | "spoiled"
-    condition = Column(String)             # "good" | "bad" -- the simple owner-facing gate
+    condition = Column(String)             # "good" | "bad"
     est_shelf_life_days = Column(Float)
 
+    batch = relationship("StorageBatch", back_populates="samples")
     scan_session = relationship("ScanSession", back_populates="samples")
 
 
@@ -106,6 +107,84 @@ class AlertLog(Base):
 
 def init_db():
     Base.metadata.create_all(bind=engine)
+    legacy_columns = {
+        "scan_session": (
+            "ripe_count",
+            "near_ripe_count",
+            "unripe_count",
+            "spoiled_count",
+        ),
+        "cucumber_sample": ("ripeness_class",),
+    }
+    with engine.begin() as connection:
+        inspector = inspect(connection)
+
+        batch_columns = {
+            column["name"] for column in inspector.get_columns("storage_batch")
+        }
+        if "cucumber_variety" not in batch_columns:
+            connection.exec_driver_sql(
+                'ALTER TABLE "storage_batch" ADD COLUMN "cucumber_variety" VARCHAR'
+            )
+        if "initial_quantity" not in batch_columns:
+            connection.exec_driver_sql(
+                'ALTER TABLE "storage_batch" ADD COLUMN "initial_quantity" INTEGER'
+            )
+
+        sample_columns = {
+            column["name"]
+            for column in inspector.get_columns("cucumber_sample")
+        }
+        if "scan_session_id" in sample_columns and "scan_id" not in sample_columns:
+            connection.exec_driver_sql(
+                'ALTER TABLE "cucumber_sample" '
+                'RENAME COLUMN "scan_session_id" TO "scan_id"'
+            )
+            sample_columns.remove("scan_session_id")
+            sample_columns.add("scan_id")
+        if "batch_id" not in sample_columns:
+            connection.exec_driver_sql(
+                'ALTER TABLE "cucumber_sample" '
+                'ADD COLUMN "batch_id" INTEGER REFERENCES storage_batch(id)'
+            )
+            sample_columns.add("batch_id")
+        if "est_shelf_life_days" not in sample_columns:
+            connection.exec_driver_sql(
+                'ALTER TABLE "cucumber_sample" ADD COLUMN "est_shelf_life_days" FLOAT'
+            )
+        if "cucumber_number" not in sample_columns:
+            connection.exec_driver_sql(
+                'ALTER TABLE "cucumber_sample" '
+                'ADD COLUMN "cucumber_number" INTEGER NOT NULL DEFAULT 0'
+            )
+            old_samples = connection.exec_driver_sql(
+                "SELECT id, scan_id FROM cucumber_sample "
+                "ORDER BY scan_id, track_position_mm DESC, bbox_x DESC, id"
+            ).fetchall()
+            number_by_scan = {}
+            for sample_id, scan_id in old_samples:
+                number_by_scan[scan_id] = number_by_scan.get(scan_id, 0) + 1
+                connection.exec_driver_sql(
+                    "UPDATE cucumber_sample SET cucumber_number = ? WHERE id = ?",
+                    (number_by_scan[scan_id], sample_id),
+                )
+        connection.exec_driver_sql(
+            "UPDATE cucumber_sample "
+            "SET batch_id = (SELECT batch_id FROM scan_session "
+            "WHERE scan_session.id = cucumber_sample.scan_id) "
+            "WHERE batch_id IS NULL"
+        )
+
+        for table_name, columns in legacy_columns.items():
+            existing_columns = {
+                column["name"] for column in inspector.get_columns(table_name)
+            }
+            for column_name in columns:
+                if column_name in existing_columns:
+                    connection.exec_driver_sql(
+                        f'ALTER TABLE "{table_name}" DROP COLUMN "{column_name}"'
+                    )
+                    existing_columns.remove(column_name)
 
 
 def get_db():

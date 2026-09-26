@@ -17,7 +17,7 @@ from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 
@@ -44,7 +44,9 @@ FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 # ---------- Pydantic response/request shapes ----------
 
 class BatchCreate(BaseModel):
-    batch_code: str
+    batch_code: Optional[str] = None
+    cucumber_variety: Optional[str] = None
+    initial_quantity: Optional[int] = Field(default=None, ge=1)
     target_temp_c: float = 11.0
     target_humidity_pct: float = 95.0
     owner_phone: Optional[str] = None
@@ -72,10 +74,11 @@ async def startup():
     active = db.query(StorageBatch).filter(StorageBatch.ended_at.is_(None)).first()
     if not active:
         active = StorageBatch(
-            batch_code=f"BATCH-{datetime.utcnow():%Y%m%d-%H%M}",
             owner_phone="+639000000000",  # placeholder -- set the real number via POST /api/batch
         )
         db.add(active)
+        db.flush()
+        active.batch_code = f"BATCH-{active.id:04d}"
         db.commit()
     db.close()
 
@@ -113,20 +116,24 @@ def _execute_scan(batch_id: int, db: Session, trigger_type: str) -> ScanSession:
     db.commit()
     db.refresh(session_row)
 
-    samples, counts, bad_count = vision_pipeline.run_scan(batch_id)
+    batch = db.query(StorageBatch).filter(StorageBatch.id == batch_id).first()
+    expected_count = batch.initial_quantity if batch else None
+    samples, counts = vision_pipeline.run_scan(batch_id, expected_count)
     for s in samples:
-        db.add(CucumberSample(scan_session_id=session_row.id, **s))
+        db.add(CucumberSample(batch_id=batch_id, scan_id=session_row.id, **s))
 
-    session_row.ripe_count = counts["ripe"]
-    session_row.near_ripe_count = counts["near_ripe"]
-    session_row.unripe_count = counts["unripe"]
-    session_row.spoiled_count = counts["spoiled"]
     db.commit()
     db.refresh(session_row)
 
-    if bad_count > 0:
-        batch = db.query(StorageBatch).get(batch_id)
-        notifier.notify_bad_condition(db, batch, session_row.id, bad_count)
+    bad_cucumber_numbers = [
+        sample["cucumber_number"]
+        for sample in samples
+        if sample["condition"] == "bad"
+    ]
+    if bad_cucumber_numbers:
+        notifier.notify_bad_condition(
+            db, batch, session_row.id, bad_cucumber_numbers
+        )
 
     return session_row
 
@@ -178,6 +185,8 @@ def get_active_batch(db: Session = Depends(get_db)):
         "started_at": batch.started_at,
         "target_temp_c": batch.target_temp_c,
         "target_humidity_pct": batch.target_humidity_pct,
+        "cucumber_variety": batch.cucumber_variety,
+        "initial_quantity": batch.initial_quantity,
         "owner_phone": batch.owner_phone,
         "notes": batch.notes,
     }
@@ -186,13 +195,31 @@ def get_active_batch(db: Session = Depends(get_db)):
 @app.post("/api/batch")
 def create_batch(payload: BatchCreate, db: Session = Depends(get_db)):
     current = db.query(StorageBatch).filter(StorageBatch.ended_at.is_(None)).first()
+    inherited_phone = (
+        current.owner_phone if current and current.owner_phone else "+639000000000"
+    )
     if current:
         current.ended_at = datetime.utcnow()
-    batch = StorageBatch(**payload.dict())
+    batch = StorageBatch(
+        batch_code=payload.batch_code,
+        cucumber_variety=payload.cucumber_variety,
+        initial_quantity=payload.initial_quantity,
+        target_temp_c=payload.target_temp_c,
+        target_humidity_pct=payload.target_humidity_pct,
+        owner_phone=payload.owner_phone or inherited_phone,
+        notes=payload.notes,
+    )
     db.add(batch)
+    db.flush()
+    if not batch.batch_code:
+        batch.batch_code = f"BATCH-{batch.id:04d}"
     db.commit()
     db.refresh(batch)
-    return {"id": batch.id, "batch_code": batch.batch_code}
+    return {
+        "id": batch.id,
+        "batch_code": batch.batch_code,
+        "initial_quantity": batch.initial_quantity,
+    }
 
 
 # ---------- Sensor endpoints ----------
@@ -273,32 +300,41 @@ def trigger_manual_scan(db: Session = Depends(get_db)):
 
 @app.get("/api/scan/latest")
 def latest_scan(db: Session = Depends(get_db)):
-    session_row = db.query(ScanSession).order_by(desc(ScanSession.started_at)).first()
+    active_batch = db.query(StorageBatch).filter(StorageBatch.ended_at.is_(None)).first()
+    scan_query = db.query(ScanSession)
+    if active_batch:
+        scan_query = scan_query.filter(ScanSession.batch_id == active_batch.id)
+    session_row = scan_query.order_by(desc(ScanSession.started_at)).first()
     if not session_row:
         raise HTTPException(404, "No scans yet")
     samples = (
         db.query(CucumberSample)
-        .filter(CucumberSample.scan_session_id == session_row.id)
+        .filter(CucumberSample.scan_id == session_row.id)
+        .order_by(CucumberSample.cucumber_number)
         .all()
     )
+    counts = {"good": 0, "bad": 0}
+    for sample in samples:
+        if sample.condition in counts:
+            counts[sample.condition] += 1
+
     return {
         "scan_session_id": session_row.id,
+        "batch_id": session_row.batch_id,
         "started_at": session_row.started_at,
         "trigger_type": session_row.trigger_type,
-        "counts": {
-            "ripe": session_row.ripe_count,
-            "near_ripe": session_row.near_ripe_count,
-            "unripe": session_row.unripe_count,
-            "spoiled": session_row.spoiled_count,
-        },
+        "counts": counts,
         "samples": [
             {
+                "sample_id": s.id,
+                "batch_id": s.batch_id,
+                "scan_id": s.scan_id,
+                "cucumber_number": s.cucumber_number,
                 "track_position_mm": s.track_position_mm,
                 "bbox": [s.bbox_x, s.bbox_y, s.bbox_w, s.bbox_h],
                 "yolo_confidence": s.yolo_confidence,
                 "hsi_hue_mean": s.hsi_hue_mean,
                 "lbp_texture_score": s.lbp_texture_score,
-                "ripeness_class": s.ripeness_class,
                 "condition": s.condition,
                 "est_shelf_life_days": s.est_shelf_life_days,
             }
@@ -318,23 +354,21 @@ def scan_history(limit: int = 20, db: Session = Depends(get_db)):
     sample_counts = {row.id: {"good": 0, "bad": 0} for row in rows}
     if sample_counts:
         samples = (
-            db.query(CucumberSample.scan_session_id, CucumberSample.condition)
-            .filter(CucumberSample.scan_session_id.in_(sample_counts))
+            db.query(CucumberSample.scan_id, CucumberSample.condition)
+            .filter(CucumberSample.scan_id.in_(sample_counts))
             .all()
         )
-        for scan_session_id, condition in samples:
+        for scan_id, condition in samples:
             if condition in ("good", "bad"):
-                sample_counts[scan_session_id][condition] += 1
+                sample_counts[scan_id][condition] += 1
 
     return [
         {
             "id": r.id,
+            "batch_id": r.batch_id,
+            "batch_code": r.batch.batch_code,
             "started_at": r.started_at.isoformat(),
             "trigger_type": r.trigger_type,
-            "ripe_count": r.ripe_count,
-            "near_ripe_count": r.near_ripe_count,
-            "unripe_count": r.unripe_count,
-            "spoiled_count": r.spoiled_count,
             "detected_count": sum(sample_counts[r.id].values()),
             "good_count": sample_counts[r.id]["good"],
             "bad_count": sample_counts[r.id]["bad"],

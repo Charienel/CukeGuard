@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>CukeGuard Dashboard</title>
-<link rel="stylesheet" href="/static/style.css" />
+<link rel="stylesheet" href="/static/style.css?v=4" />
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 </head>
 <body>
@@ -21,6 +21,7 @@
         <span class="mode-indicator"></span>
         <span><strong id="system-mode-label">SIMULATION MODE</strong><small id="system-mode-detail">Sensors, camera, controls and SMS are simulated</small></span>
       </div>
+      <button id="new-batch-btn" class="btn-secondary" type="button">New Batch</button>
       <button id="manual-scan-btn" class="btn-primary">Run Demo Scan</button>
     </div>
   </header>
@@ -72,7 +73,7 @@
       <div class="table-wrap">
         <table id="alerts-table">
           <thead>
-            <tr><th>Time</th><th>Phone</th><th>Bad Count</th><th>Status</th></tr>
+            <tr><th>Time</th><th>Phone</th><th>Bad Count</th><th>Message</th><th>Status</th></tr>
           </thead>
           <tbody></tbody>
         </table>
@@ -81,13 +82,13 @@
 
     <section class="panel">
       <h2 id="vision-title">Latest Scan (Simulated)</h2>
-      <div class="ripeness-summary" id="ripeness-summary"></div>
       <div class="table-wrap">
         <table id="sample-table">
           <thead>
             <tr>
-              <th>Pos (mm)</th><th>Class</th><th>Condition</th><th>Confidence</th>
-              <th>Hue</th><th>Texture</th><th>Demo estimate (d)</th>
+              <th>Batch ID</th><th>Scan ID</th><th>Cucumber #</th>
+              <th>Condition</th><th>Est. Shelf Life (days)</th>
+              <th>Confidence</th><th>Hue</th><th>Texture</th>
             </tr>
           </thead>
           <tbody></tbody>
@@ -100,7 +101,7 @@
       <div class="table-wrap">
         <table id="scan-history-table">
           <thead>
-            <tr><th>Time</th><th>Trigger</th><th>Detected</th><th>Good</th><th>Bad</th><th>Ripe</th><th>Near-ripe</th><th>Unripe</th><th>Spoiled</th></tr>
+            <tr><th>Time</th><th>Trigger</th><th>Batch ID</th><th>Scan ID</th><th>Detected</th><th>Good</th><th>Bad</th></tr>
           </thead>
           <tbody></tbody>
         </table>
@@ -108,6 +109,6 @@
     </section>
   </main>
 
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=7"></script>
 </body>
 </html>

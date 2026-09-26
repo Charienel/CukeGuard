@@ -1,5 +1,5 @@
 """
-vision_pipeline.py — ripeness classification pipeline.
+vision_pipeline.py — cucumber condition detection pipeline.
 
 Right now this SIMULATES a scan pass: the stepper "moves" the carriage,
 a "camera" captures a frame at each position, and detection/classification
@@ -9,50 +9,21 @@ TO GO LIVE ON THE PI:
   - Replace `home_and_scan_positions()` with real NEMA17 stepper control
     (RPi.GPIO / gpiozero step pulses) to traverse the V-slot track.
   - Replace `capture_frame()` with a real picamera2 capture.
-  - Replace `detect_and_classify()` with your trained YOLO model
-    (ultralytics) for bounding boxes + confidence, OpenCV for HSI hue
-    extraction, and your LBP texture function, then feed the fused
-    feature vector into your ripeness classifier.
+    - Replace `detect_and_classify()` with your trained YOLO model
+        (ultralytics) for bounding boxes + confidence, OpenCV for HSI hue
+        extraction, and your LBP texture function, then classify each cucumber
+        as good or bad using your thesis criteria.
   - Everything else (session bookkeeping, DB writes, API shape) stays the same.
 """
 import random
+from typing import Optional
 
 TRACK_LENGTH_MM = 600
 STEP_MM = 100  # one capture every 100mm along the track
 
-CLASS_WEIGHTS = {
-    "ripe": 0.35,
-    "near_ripe": 0.30,
-    "unripe": 0.30,
-    "spoiled": 0.05,
-}
-
-SHELF_LIFE_BY_CLASS = {
-    "ripe": (2, 5),
-    "near_ripe": (5, 9),
-    "unripe": (9, 15),
-    "spoiled": (0, 1),
-}
-
-# Owner-facing gate: "spoiled" (and over-ripe/near-spoiled ripe stock) is what
-# should actually pull someone out to the shelter, not every ripeness label.
-BAD_CONDITION_CLASSES = {"spoiled"}
-
-
-def condition_for(ripeness_class: str, shelf_life_days: float) -> str:
-    """Collapses the 4-way ripeness label into the simple good/bad gate
-    that drives the SMS alert. Tune this rule to match your defense
-    criteria (e.g. also flag 'ripe' with <1 day shelf life left)."""
-    if ripeness_class in BAD_CONDITION_CLASSES:
-        return "bad"
-    if ripeness_class == "ripe" and shelf_life_days < 1.0:
-        return "bad"
-    return "good"
-
-
 def home_and_scan_positions():
-    """SIMULATED stepper sweep. Replace with real NEMA17 step sequence."""
-    return list(range(0, TRACK_LENGTH_MM + 1, STEP_MM))
+    """SIMULATED right-to-left sweep. Replace with real NEMA17 step sequence."""
+    return list(range(TRACK_LENGTH_MM, -1, -STEP_MM))
 
 
 def capture_frame(position_mm: float):
@@ -60,19 +31,21 @@ def capture_frame(position_mm: float):
     return {"position_mm": position_mm}
 
 
-def detect_and_classify(frame: dict):
+def detect_and_classify(frame: dict, object_count: Optional[int] = None):
     """
-    SIMULATED YOLO detection + HSI/LBP feature fusion + classification.
+    SIMULATED YOLO detection + HSI/LBP feature fusion + condition classification.
     Returns 0-2 fake "detections" per frame position, each with the fields
     your CucumberSample table expects.
     """
     detections = []
-    n_objects = random.choices([0, 1, 2], weights=[0.2, 0.55, 0.25])[0]
+    n_objects = (
+        object_count
+        if object_count is not None
+        else random.choices([0, 1, 2], weights=[0.2, 0.55, 0.25])[0]
+    )
     for _ in range(n_objects):
-        ripeness = random.choices(
-            list(CLASS_WEIGHTS.keys()), weights=list(CLASS_WEIGHTS.values())
-        )[0]
-        lo, hi = SHELF_LIFE_BY_CLASS[ripeness]
+        condition = random.choices(["good", "bad"], weights=[0.9, 0.1])[0]
+        shelf_life_days = random.uniform(10, 18) if condition == "good" else random.uniform(0, 3)
         detections.append({
             "bbox_x": round(random.uniform(0, 640), 1),
             "bbox_y": round(random.uniform(0, 480), 1),
@@ -81,31 +54,47 @@ def detect_and_classify(frame: dict):
             "yolo_confidence": round(random.uniform(0.72, 0.98), 3),
             "hsi_hue_mean": round(random.uniform(35, 95), 2),   # green-yellow hue range
             "lbp_texture_score": round(random.uniform(0.1, 0.9), 3),
-            "ripeness_class": ripeness,
-            "est_shelf_life_days": round(random.uniform(lo, hi), 1),
+            "condition": condition,
+            "est_shelf_life_days": round(shelf_life_days, 1),
         })
-    for d in detections:
-        d["condition"] = condition_for(d["ripeness_class"], d["est_shelf_life_days"])
     return detections
 
 
-def run_scan(batch_id: int):
+def run_scan(batch_id: int, expected_count: Optional[int] = None):
     """
-    Runs one full scan pass and returns (samples, counts) ready to persist.
+    Runs one full scan pass and returns (samples, condition_counts).
     `samples` is a list of dicts matching CucumberSample columns
-    (minus scan_session_id, which the caller assigns after creating the row).
+    (minus batch_id and scan_id, which the caller assigns after creating the row).
     """
     samples = []
-    counts = {"ripe": 0, "near_ripe": 0, "unripe": 0, "spoiled": 0}
-    bad_count = 0
+    counts = {"good": 0, "bad": 0}
 
-    for pos in home_and_scan_positions():
-        frame = capture_frame(pos)
-        for det in detect_and_classify(frame):
-            det["track_position_mm"] = pos
-            samples.append(det)
-            counts[det["ripeness_class"]] += 1
-            if det["condition"] == "bad":
-                bad_count += 1
+    positions = home_and_scan_positions()
+    if expected_count is not None and expected_count > 0:
+        for cucumber_index in range(expected_count):
+            position_index = min(
+                cucumber_index * len(positions) // expected_count,
+                len(positions) - 1,
+            )
+            pos = positions[position_index]
+            for det in detect_and_classify(capture_frame(pos), object_count=1):
+                det["track_position_mm"] = pos
+                samples.append(det)
+    else:
+        for pos in positions:
+            frame = capture_frame(pos)
+            for det in detect_and_classify(frame):
+                det["track_position_mm"] = pos
+                samples.append(det)
 
-    return samples, counts, bad_count
+    for sample in samples:
+        counts[sample["condition"]] += 1
+
+    samples.sort(
+        key=lambda sample: (sample["track_position_mm"], sample["bbox_x"]),
+        reverse=True,
+    )
+    for cucumber_number, sample in enumerate(samples, start=1):
+        sample["cucumber_number"] = cucumber_number
+
+    return samples, counts

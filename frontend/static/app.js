@@ -10,8 +10,11 @@ async function fetchJSON(path, opts) {
 async function loadBatch() {
   try {
     const batch = await fetchJSON("/batch/active");
+    const quantity = batch.initial_quantity == null
+      ? "count not set"
+      : `${batch.initial_quantity} cucumbers`;
     document.getElementById("batch-label").textContent =
-      `${batch.batch_code} · started ${new Date(batch.started_at).toLocaleString()}`;
+      `B-${String(batch.id).padStart(4, "0")} · ${batch.batch_code} · ${quantity}`;
   } catch (e) { console.warn(e); }
 }
 
@@ -73,6 +76,7 @@ async function loadAlerts() {
         <td>${new Date(a.sent_at).toLocaleString()}</td>
         <td>${a.phone_number}</td>
         <td>${a.bad_count}</td>
+        <td>${a.message}</td>
         <td>${a.delivery_status}</td>`;
       tbody.appendChild(tr);
     });
@@ -121,42 +125,36 @@ async function loadHistoryChart() {
   } catch (e) { console.warn(e); }
 }
 
-function renderRipenessSummary(counts) {
-  const el = document.getElementById("ripeness-summary");
-  el.innerHTML = "";
-  const labels = { ripe: "Ripe", near_ripe: "Near-ripe", unripe: "Unripe", spoiled: "Spoiled" };
-  for (const key of Object.keys(labels)) {
-    const pill = document.createElement("span");
-    pill.className = `ripeness-pill pill-${key}`;
-    pill.textContent = `${labels[key]}: ${counts[key] ?? 0}`;
-    el.appendChild(pill);
-  }
-}
-
 async function loadLatestScan() {
+  const tbody = document.querySelector("#sample-table tbody");
   try {
     const scan = await fetchJSON("/scan/latest");
-    renderRipenessSummary(scan.counts);
 
-    const goodCount = scan.samples.filter(s => s.condition === "good").length;
-    const badCount = scan.samples.filter(s => s.condition === "bad").length;
-    document.getElementById("metric-condition").textContent = `${goodCount}/${badCount}`;
+    document.getElementById("metric-condition").textContent =
+      `${scan.counts.good}/${scan.counts.bad}`;
 
-    const tbody = document.querySelector("#sample-table tbody");
     tbody.innerHTML = "";
     scan.samples.forEach(s => {
       const tr = document.createElement("tr");
       tr.innerHTML = `
-        <td>${s.track_position_mm}</td>
-        <td>${s.ripeness_class}</td>
+        <td>B-${String(s.batch_id).padStart(4, "0")}</td>
+        <td>S-${String(s.scan_id).padStart(4, "0")}</td>
+        <td>#${s.cucumber_number}</td>
         <td class="cond-${s.condition}">${s.condition}</td>
+        <td>${s.est_shelf_life_days == null ? "N/A" : s.est_shelf_life_days.toFixed(1)}</td>
         <td>${(s.yolo_confidence * 100).toFixed(1)}%</td>
         <td>${s.hsi_hue_mean.toFixed(1)}</td>
-        <td>${s.lbp_texture_score.toFixed(2)}</td>
-        <td>${s.est_shelf_life_days}</td>`;
+        <td>${s.lbp_texture_score.toFixed(2)}</td>`;
       tbody.appendChild(tr);
     });
-  } catch (e) { console.warn(e); }
+  } catch (e) {
+    if (e.message.endsWith("-> 404")) {
+      document.getElementById("metric-condition").textContent = "0/0";
+      tbody.innerHTML = '<tr><td colspan="8">No scans for this batch yet.</td></tr>';
+    } else {
+      console.warn(e);
+    }
+  }
 }
 
 async function loadScanHistory() {
@@ -169,13 +167,11 @@ async function loadScanHistory() {
       tr.innerHTML = `
         <td>${new Date(r.started_at).toLocaleString()}</td>
         <td>${r.trigger_type}</td>
+        <td>B-${String(r.batch_id).padStart(4, "0")}</td>
+        <td>S-${String(r.id).padStart(4, "0")}</td>
         <td>${r.detected_count}</td>
         <td class="cond-good">${r.good_count}</td>
-        <td class="cond-bad">${r.bad_count}</td>
-        <td>${r.ripe_count}</td>
-        <td>${r.near_ripe_count}</td>
-        <td>${r.unripe_count}</td>
-        <td>${r.spoiled_count}</td>`;
+        <td class="cond-bad">${r.bad_count}</td>`;
       tbody.appendChild(tr);
     });
   } catch (e) { console.warn(e); }
@@ -186,16 +182,37 @@ async function refreshAll() {
 }
 
 document.getElementById("manual-scan-btn").addEventListener("click", async (e) => {
-  e.target.disabled = true;
-  e.target.textContent = "Scanning…";
+  const button = e.currentTarget;
+  const defaultLabel = button.textContent;
+  button.disabled = true;
+  button.textContent = "Scanning…";
   try {
     await fetchJSON("/scan/manual", { method: "POST" });
     await Promise.all([loadLatestScan(), loadScanHistory()]);
   } catch (err) {
     alert("Scan failed: " + err.message);
   } finally {
-    e.target.disabled = false;
-    e.target.textContent = "Run Manual Scan";
+    button.disabled = false;
+    button.textContent = defaultLabel;
+  }
+});
+
+document.getElementById("new-batch-btn").addEventListener("click", async (event) => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  button.textContent = "Creating…";
+  try {
+    await fetchJSON("/batch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    await Promise.all([loadBatch(), loadLatestScan(), loadScanHistory()]);
+  } catch (error) {
+    alert("New batch failed: " + error.message);
+  } finally {
+    button.disabled = false;
+    button.textContent = "New Batch";
   }
 });
 
