@@ -153,7 +153,7 @@ def system_status():
             "sensors": "simulated",
             "camera": "simulated",
             "actuators": "simulated",
-            "sms": "simulated",
+            "sms": notifier.sms_mode(),
         },
         "climate_ranges": {
             "temperature_c": {

@@ -1,5 +1,27 @@
 const API = "/api";
 let climateChart;
+let latestAlert = null;
+
+function updateAlertBanner() {
+  const banner = document.getElementById("status-banner");
+  const text = document.getElementById("status-text");
+  const age = latestAlert ? Date.now() - new Date(latestAlert.sent_at).getTime() : Infinity;
+  if (age < 0 || age >= 30000) {
+    banner.classList.remove("alert");
+    return;
+  }
+
+  banner.classList.remove("correcting", "limited");
+  banner.classList.add("alert");
+  const status = latestAlert.delivery_status;
+  const delivery = status.startsWith("failed")
+    ? `SMS ${status}`
+    : ({
+        submitted: "SMS accepted by provider",
+        simulated: "SMS simulated, not delivered",
+      }[status] || "SMS status unknown");
+  text.textContent = `Bad cucumber detected — ${delivery} to ${latestAlert.phone_number}`;
+}
 
 async function fetchJSON(path, opts) {
   const res = await fetch(API + path, opts);
@@ -23,9 +45,17 @@ async function loadSystemStatus() {
     const status = await fetchJSON("/system/status");
     const simulated = status.mode === "simulation";
     document.getElementById("system-mode-label").textContent = simulated ? "SIMULATION MODE" : "HARDWARE MODE";
+    const smsMode = status.components.sms;
+    const smsDetail = smsMode === "semaphore"
+      ? "Semaphore SMS configured"
+      : smsMode === "iprog"
+        ? "iProg SMS configured"
+        : smsMode.endsWith("_unconfigured")
+          ? `${smsMode.split("_")[0]} selected; API token missing`
+          : "SMS simulated";
     document.getElementById("system-mode-detail").textContent = simulated
-      ? "Sensors, camera, controls and SMS are simulated"
-      : "Connected hardware readings and controls";
+      ? `Sensors, camera and controls simulated · ${smsDetail}`
+      : `Connected hardware readings and controls · ${smsDetail}`;
     document.getElementById("manual-scan-btn").textContent = simulated ? "Run Demo Scan" : "Run Scan";
     document.getElementById("vision-title").textContent = simulated ? "Latest Scan (Simulated)" : "Latest Scan";
 
@@ -62,6 +92,7 @@ async function loadLatestSensor() {
       banner.classList.add("correcting");
       text.textContent = `Outside target; automatic correction active. ${r.correction_note}`;
     }
+    updateAlertBanner();
   } catch (e) { console.warn(e); }
 }
 
@@ -80,11 +111,8 @@ async function loadAlerts() {
         <td>${a.delivery_status}</td>`;
       tbody.appendChild(tr);
     });
-    if (rows.length && (Date.now() - new Date(rows[0].sent_at)) < 30000) {
-      document.getElementById("status-banner").classList.add("alert");
-      document.getElementById("status-text").textContent =
-        `Bad cucumber detected — SMS sent to ${rows[0].phone_number}`;
-    }
+    latestAlert = rows[0] || null;
+    updateAlertBanner();
   } catch (e) { console.warn(e); }
 }
 
@@ -188,7 +216,7 @@ document.getElementById("manual-scan-btn").addEventListener("click", async (e) =
   button.textContent = "Scanning…";
   try {
     await fetchJSON("/scan/manual", { method: "POST" });
-    await Promise.all([loadLatestScan(), loadScanHistory()]);
+    await Promise.all([loadLatestScan(), loadScanHistory(), loadAlerts()]);
   } catch (err) {
     alert("Scan failed: " + err.message);
   } finally {
@@ -221,3 +249,4 @@ loadSystemStatus();
 refreshAll();
 setInterval(loadLatestSensor, 5000);
 setInterval(loadHistoryChart, 15000);
+setInterval(loadAlerts, 5000);

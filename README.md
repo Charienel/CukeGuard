@@ -16,6 +16,10 @@ Then open `http://localhost:8000` (or `http://<pi-ip>:8000` from another
 device on the same network — this is what makes it work for both the local
 touchscreen in kiosk mode and remote browser access).
 
+To export the complete database history to a filterable Excel workbook, run
+`python export_database.py`. The timestamped workbook is written to `exports/`.
+It is a snapshot; rerun the script to include newer records.
+
 ## What's real vs. simulated right now
 
 | Piece | Status |
@@ -41,8 +45,42 @@ touchscreen in kiosk mode and remote browser access).
 4. Set the real owner number with `POST /api/batch` (`owner_phone` field) —
    a placeholder (`+639000000000`) is used until you do.
 
-To send real SMS, swap the body of `notifier.send_sms()` for a GSM module
-call or a cloud SMS API (Semaphore, Twilio) — nothing else needs to change.
+### Enable test SMS with iProg
+
+In PowerShell, set the iProg token in the same terminal used to start Uvicorn:
+
+```powershell
+$env:CUKEGUARD_SMS_PROVIDER = "iprog"
+$env:IPROG_API_TOKEN = "your-iProg-api-token"
+# Optional: choose 0, 1, or 2; omit to use iProg's default.
+$env:IPROG_SMS_PROVIDER = "0"
+python -m uvicorn backend.app:app --host 0.0.0.0 --port 8000
+```
+
+Never commit or paste the token into chat. Set the active batch's `owner_phone`
+to your real recipient number in international format. A successful iProg API
+response is recorded as `submitted`: iProg has queued the message, but that
+does not confirm carrier delivery. Verify account credits and test with a
+number you control. The existing Semaphore setup is also supported.
+
+### Enable real SMS with Semaphore
+
+In PowerShell, set the provider credentials before starting Uvicorn:
+
+```powershell
+$env:CUKEGUARD_SMS_PROVIDER = "semaphore"
+$env:SEMAPHORE_API_KEY = "your-semaphore-api-key"
+$env:SEMAPHORE_SENDER_NAME = "CukeGuard" # optional; must be approved by Semaphore
+python -m uvicorn backend.app:app --host 0.0.0.0 --port 8000
+```
+
+Never commit the API key. Set a real recipient number when creating the active
+batch with `POST /api/batch` (`owner_phone`, in international format). The
+dashboard refreshes the alert list every five seconds; scans submit an SMS as
+soon as a bad sample is detected. Scheduled scans still run every 15 minutes.
+An alert status of `submitted` means Semaphore accepted the request, not that
+the carrier confirmed delivery. Without these settings, status is `simulated`
+and no text is sent.
 
 Every simulated function has a docstring saying exactly what real call to
 swap in (`RPi.GPIO`/`gpiozero`, `adafruit_sht31d`, `picamera2`,

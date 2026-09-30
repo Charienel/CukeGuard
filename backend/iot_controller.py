@@ -23,7 +23,6 @@ TARGET_TEMP_RANGE = (10.0, 12.5)
 TARGET_HUMIDITY_RANGE = (90.0, 95.0)
 DATA_MODE = "simulation"
 
-# in-memory "physical" state the simulator nudges toward target each tick
 _sim_state = {"temp": 11.5, "humidity": 92.5, "peltier_pwm": 0.0, "mister": False}
 
 

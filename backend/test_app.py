@@ -1,8 +1,10 @@
+import json
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import inspect
+from urllib.parse import parse_qs
 
-from backend import iot_controller, vision_pipeline
+from backend import iot_controller, notifier, vision_pipeline
 from backend.app import app
 from backend.database import CucumberSample, SessionLocal, engine
 
@@ -48,6 +50,121 @@ def test_simulated_readings_remain_inside_storage_ranges():
     readings = [iot_controller.read_temperature_humidity() for _ in range(50)]
     assert all(10.0 <= temp <= 12.5 for temp, _ in readings)
     assert all(90.0 <= humidity <= 95.0 for _, humidity in readings)
+
+
+def test_sms_is_explicitly_simulated_without_provider(monkeypatch):
+    monkeypatch.delenv("CUKEGUARD_SMS_PROVIDER", raising=False)
+    monkeypatch.delenv("SEMAPHORE_API_KEY", raising=False)
+
+    assert notifier.sms_mode() == "simulated"
+    assert notifier.send_sms("+639000000000", "test") == "simulated"
+
+
+def test_sms_submits_to_semaphore_when_configured(monkeypatch):
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+        def read(self):
+            return b'[{"status":"Queued"}]'
+
+    request_data = {}
+
+    def fake_urlopen(request, timeout):
+        request_data.update(
+            form=parse_qs(request.data.decode("utf-8")),
+            timeout=timeout,
+        )
+        return FakeResponse()
+
+    monkeypatch.setenv("CUKEGUARD_SMS_PROVIDER", "semaphore")
+    monkeypatch.setenv("SEMAPHORE_API_KEY", "test-key")
+    monkeypatch.setenv("SEMAPHORE_SENDER_NAME", "CukeGuard")
+    monkeypatch.setattr(notifier, "urlopen", fake_urlopen)
+
+    assert notifier.sms_mode() == "semaphore"
+    assert notifier.send_sms("+639123456789", "bad cucumber") == "submitted"
+    assert request_data == {
+        "form": {
+            "apikey": ["test-key"],
+            "number": ["+639123456789"],
+            "message": ["bad cucumber"],
+            "sendername": ["CukeGuard"],
+        },
+        "timeout": 10,
+    }
+
+
+def test_sms_submits_to_iprog_when_configured(monkeypatch):
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+        def read(self):
+            return b'{"status":200,"message":"queued","message_id":"test-123"}'
+
+    request_data = {}
+
+    def fake_urlopen(request, timeout):
+        request_data.update(
+            url=request.full_url,
+            body=request.data,
+            content_type=request.get_header("Content-type"),
+            timeout=timeout,
+        )
+        return FakeResponse()
+
+    monkeypatch.setenv("CUKEGUARD_SMS_PROVIDER", "iprog")
+    monkeypatch.setenv("IPROG_API_TOKEN", "test-token")
+    monkeypatch.setenv("IPROG_SMS_PROVIDER", "1")
+    monkeypatch.setattr(notifier, "urlopen", fake_urlopen)
+
+    assert notifier.sms_mode() == "iprog"
+    assert notifier.send_sms("+639123456789", "bad cucumber") == "submitted"
+    assert "api_token=test-token" in request_data["url"]
+    assert request_data["content_type"] == "application/json"
+    assert request_data["timeout"] == 10
+    assert json.loads(request_data["body"]) == {
+        "api_token": "test-token",
+        "phone_number": "639123456789",
+        "message": "bad cucumber",
+        "sms_provider": 1,
+    }
+
+
+def test_iprog_failure_exposes_redacted_provider_reason(monkeypatch):
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+        def read(self):
+            return b'{"status":401,"message":"Invalid API token test-token"}'
+
+    monkeypatch.setenv("CUKEGUARD_SMS_PROVIDER", "iprog")
+    monkeypatch.setenv("IPROG_API_TOKEN", "test-token")
+    monkeypatch.setattr(notifier, "urlopen", lambda request, timeout: FakeResponse())
+
+    status = notifier.send_sms("639123456789", "bad cucumber")
+
+    assert status == "failed: Invalid API token [redacted]"
+    assert "test-token" not in status
+
+
+def test_iprog_selection_without_token_fails_instead_of_simulating(monkeypatch):
+    monkeypatch.setenv("CUKEGUARD_SMS_PROVIDER", "iprog")
+    monkeypatch.delenv("IPROG_API_TOKEN", raising=False)
+
+    assert notifier.sms_mode() == "iprog_unconfigured"
+    assert notifier.send_sms("639123456789", "bad cucumber") == "failed"
 
 
 def test_scan_numbers_cucumbers_right_to_left(monkeypatch):
@@ -172,11 +289,12 @@ def test_manual_scan_creates_scan_session(client, monkeypatch):
 
     alert_response = client.get("/api/alerts/history?limit=20")
     assert alert_response.status_code == 200
-    alert_messages = [alert["message"] for alert in alert_response.json()]
-    alert_message = next(
-        message for message in alert_messages
-        if f"Scan S-{scan['scan_session_id']:04d}:" in message
+    alert = next(
+        row for row in alert_response.json()
+        if f"Scan S-{scan['scan_session_id']:04d}:" in row["message"]
     )
+    alert_message = alert["message"]
+    assert alert["delivery_status"] == "simulated"
     assert f"Batch B-{scan['batch_id']:04d}" in alert_message
     assert "bad cucumber(s) #1" in alert_message
 
