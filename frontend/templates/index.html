@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>CukeGuard Dashboard</title>
-<link rel="stylesheet" href="/static/style.css?v=4" />
+<link rel="stylesheet" href="/static/style.css?v=7" />
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 </head>
 <body>
@@ -15,6 +15,10 @@
         <h1>CukeGuard</h1>
         <p id="batch-label">Loading batch…</p>
       </div>
+    </div>
+    <div class="live-clock" aria-label="Local time">
+      <strong id="live-clock">--:--:--</strong>
+      <small id="live-date">Loading date…</small>
     </div>
     <div class="topbar-actions">
       <div class="mode-badge" id="system-mode">
@@ -55,11 +59,11 @@
       </div>
     </section>
 
-    <section class="panel">
+    <section class="panel climate-panel">
       <div class="panel-heading">
         <div>
           <h2>Storage Climate</h2>
-          <p class="panel-subtitle">Automatic monitoring against the storage limits</p>
+          <p class="panel-subtitle">Latest 10 readings against the storage limits</p>
         </div>
         <span class="range-chip" id="climate-range-chip">10–12.5°C · 90–95% RH</span>
       </div>
@@ -68,7 +72,20 @@
       <p class="capability-note" id="capability-note">Cooling and misting are simulated. Heating and dehumidification hardware are not configured.</p>
     </section>
 
-    <section class="panel">
+    <section class="panel schedule-panel">
+      <div class="panel-heading">
+        <div>
+          <h2>Camera Capture Schedule</h2>
+          <p class="panel-subtitle">Automatic capture resets after a manual scan</p>
+        </div>
+      </div>
+      <div class="schedule-details">
+        <div><span class="detail-label">Next automatic capture</span><strong id="next-scan-countdown">Waiting for schedule…</strong></div>
+        <div><span class="detail-label">Interval</span><strong id="scan-interval">15 minutes</strong></div>
+      </div>
+    </section>
+
+    <section class="panel alerts-panel">
       <h2>Owner Alerts (SMS)</h2>
       <div class="table-wrap">
         <table id="alerts-table">
@@ -80,7 +97,7 @@
       </div>
     </section>
 
-    <section class="panel">
+    <section class="panel samples-panel">
       <h2 id="vision-title">Latest Scan (Simulated)</h2>
       <div class="table-wrap">
         <table id="sample-table">
@@ -96,7 +113,7 @@
       </div>
     </section>
 
-    <section class="panel">
+    <section class="panel history-panel">
       <h2>Scan History</h2>
       <div class="table-wrap">
         <table id="scan-history-table">
@@ -109,6 +126,6 @@
     </section>
   </main>
 
-  <script src="/static/app.js?v=7"></script>
+  <script src="/static/app.js?v=12"></script>
 </body>
 </html>

@@ -1,11 +1,12 @@
 import json
+from datetime import datetime, timezone
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import inspect
 from urllib.parse import parse_qs
 
 from backend import iot_controller, notifier, vision_pipeline
-from backend.app import app
+from backend.app import AUTO_SCAN_SECONDS, app
 from backend.database import CucumberSample, SessionLocal, engine
 
 
@@ -26,6 +27,10 @@ def test_system_status_reports_demo_mode_and_target_bands(client):
     assert response.status_code == 200
     data = response.json()
     assert data["mode"] == "simulation"
+    assert data["auto_scan_interval_seconds"] == AUTO_SCAN_SECONDS == 900
+    next_scan = datetime.fromisoformat(data["next_auto_scan_at"])
+    assert next_scan.tzinfo == timezone.utc
+    assert 0 < (next_scan - datetime.now(timezone.utc)).total_seconds() <= AUTO_SCAN_SECONDS
     assert data["climate_ranges"]["temperature_c"] == {"min": 10.0, "max": 12.5}
     assert data["climate_ranges"]["humidity_pct"] == {"min": 90.0, "max": 95.0}
 
@@ -258,11 +263,14 @@ def test_manual_scan_creates_scan_session(client, monkeypatch):
         ], {"good": 1, "bad": 1}
 
     monkeypatch.setattr(vision_pipeline, "run_scan", fixed_scan)
+    schedule_resets = []
+    monkeypatch.setattr("backend.app._schedule_next_auto_scan", lambda: schedule_resets.append(True))
     response = client.post(
         "/api/scan/manual",
         json={},
     )
     assert response.status_code == 200
+    assert schedule_resets == [True]
     data = response.json()
     assert "scan_session_id" in data
     assert scan_call == {"batch_id": new_batch["id"], "expected_count": None}

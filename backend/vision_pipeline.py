@@ -15,8 +15,11 @@ TO GO LIVE ON THE PI:
         as good or bad using your thesis criteria.
   - Everything else (session bookkeeping, DB writes, API shape) stays the same.
 """
+import os
 import random
 from typing import Optional
+
+from . import model_classifier
 
 TRACK_LENGTH_MM = 600
 STEP_MM = 100  # one capture every 100mm along the track
@@ -37,6 +40,35 @@ def detect_and_classify(frame: dict, object_count: Optional[int] = None):
     Returns 0-2 fake "detections" per frame position, each with the fields
     your CucumberSample table expects.
     """
+    positive_label = os.getenv("CUKEGUARD_MODEL_POSITIVE_LABEL", "").strip().lower()
+    if positive_label:
+        if positive_label not in {"good", "bad"}:
+            raise ValueError("CUKEGUARD_MODEL_POSITIVE_LABEL must be 'good' or 'bad'")
+        if object_count == 0:
+            return []
+        image = frame.get("image") if isinstance(frame, dict) else frame
+        if image is None:
+            raise RuntimeError(
+                "Keras classification is enabled but capture_frame did not provide an RGB image"
+            )
+
+        prediction = model_classifier.predict_image(
+            image,
+            positive_label,
+            model_path=os.getenv("CUKEGUARD_MODEL_PATH"),
+        )
+        return [{
+            "bbox_x": 0.0,
+            "bbox_y": 0.0,
+            "bbox_w": float(prediction["width"]),
+            "bbox_h": float(prediction["height"]),
+            "yolo_confidence": prediction["confidence"],
+            "hsi_hue_mean": None,
+            "lbp_texture_score": None,
+            "condition": prediction["condition"],
+            "est_shelf_life_days": None,
+        }]
+
     detections = []
     n_objects = (
         object_count

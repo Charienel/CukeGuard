@@ -9,7 +9,9 @@ Serves:
   - The frontend dashboard (static files) at /
 """
 import asyncio
-from datetime import datetime, timedelta
+import logging
+import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -28,6 +30,7 @@ from .database import (
 from . import iot_controller, vision_pipeline, notifier
 
 app = FastAPI(title="CukeGuard API")
+logger = logging.getLogger(__name__)
 
 app.add_middleware(
     CORSMiddleware,
@@ -37,8 +40,17 @@ app.add_middleware(
 )
 
 IOT_POLL_SECONDS = 5
-AUTO_SCAN_SECONDS = 60 * 15  # scheduled scan every 15 min (tune as needed)
+AUTO_SCAN_MINUTES = max(1, int(os.getenv("CUKEGUARD_AUTO_SCAN_MINUTES", "15")))
+AUTO_SCAN_SECONDS = 60 * AUTO_SCAN_MINUTES
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+_next_auto_scan_at: Optional[datetime] = None
+
+
+def _schedule_next_auto_scan():
+    global _next_auto_scan_at
+    _next_auto_scan_at = datetime.now(timezone.utc) + timedelta(
+        seconds=AUTO_SCAN_SECONDS
+    )
 
 
 # ---------- Pydantic response/request shapes ----------
@@ -82,6 +94,7 @@ async def startup():
         db.commit()
     db.close()
 
+    _schedule_next_auto_scan()
     asyncio.create_task(iot_loop())
     asyncio.create_task(scheduled_scan_loop())
 
@@ -100,14 +113,25 @@ async def iot_loop():
 
 async def scheduled_scan_loop():
     while True:
-        await asyncio.sleep(AUTO_SCAN_SECONDS)
+        if _next_auto_scan_at is None:
+            _schedule_next_auto_scan()
+        seconds_until_scan = (
+            _next_auto_scan_at - datetime.now(timezone.utc)
+        ).total_seconds()
+        if seconds_until_scan > 0:
+            await asyncio.sleep(min(seconds_until_scan, 1))
+            continue
+
         db = SessionLocal()
         try:
             batch = db.query(StorageBatch).filter(StorageBatch.ended_at.is_(None)).first()
             if batch:
                 _execute_scan(batch.id, db, trigger_type="scheduled")
+        except Exception:
+            logger.exception("Scheduled scan failed; the next scan remains scheduled")
         finally:
             db.close()
+            _schedule_next_auto_scan()
 
 
 def _execute_scan(batch_id: int, db: Session, trigger_type: str) -> ScanSession:
@@ -149,6 +173,8 @@ def health():
 def system_status():
     return {
         "mode": iot_controller.DATA_MODE,
+        "auto_scan_interval_seconds": AUTO_SCAN_SECONDS,
+        "next_auto_scan_at": _next_auto_scan_at,
         "components": {
             "sensors": "simulated",
             "camera": "simulated",
@@ -295,6 +321,7 @@ def trigger_manual_scan(db: Session = Depends(get_db)):
     if not batch:
         raise HTTPException(404, "No active batch")
     session_row = _execute_scan(batch.id, db, trigger_type="manual")
+    _schedule_next_auto_scan()
     return {"scan_session_id": session_row.id}
 
 

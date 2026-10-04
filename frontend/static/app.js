@@ -1,11 +1,43 @@
 const API = "/api";
 let climateChart;
 let latestAlert = null;
+let nextAutomaticScanAt = null;
+
+function parseApiDate(value) {
+  if (!value) return null;
+  const timestamp = /(?:Z|[+-]\d{2}:\d{2})$/i.test(value) ? value : `${value}Z`;
+  return new Date(timestamp);
+}
+
+function updateClock() {
+  const now = new Date();
+  document.getElementById("live-clock").textContent = now.toLocaleTimeString();
+  document.getElementById("live-date").textContent = now.toLocaleDateString(undefined, {
+    weekday: "short", year: "numeric", month: "short", day: "numeric",
+  });
+}
+
+function updateScheduleDisplay() {
+  const output = document.getElementById("next-scan-countdown");
+  if (!nextAutomaticScanAt) {
+    output.textContent = "Waiting for schedule…";
+    return;
+  }
+
+  const secondsRemaining = Math.max(0, Math.ceil((nextAutomaticScanAt - Date.now()) / 1000));
+  if (secondsRemaining === 0) {
+    output.textContent = "Capture due";
+    return;
+  }
+  const minutes = Math.floor(secondsRemaining / 60);
+  const seconds = secondsRemaining % 60;
+  output.textContent = `${minutes}:${String(seconds).padStart(2, "0")} remaining`;
+}
 
 function updateAlertBanner() {
   const banner = document.getElementById("status-banner");
   const text = document.getElementById("status-text");
-  const age = latestAlert ? Date.now() - new Date(latestAlert.sent_at).getTime() : Infinity;
+  const age = latestAlert ? Date.now() - parseApiDate(latestAlert.sent_at).getTime() : Infinity;
   if (age < 0 || age >= 30000) {
     banner.classList.remove("alert");
     return;
@@ -32,11 +64,8 @@ async function fetchJSON(path, opts) {
 async function loadBatch() {
   try {
     const batch = await fetchJSON("/batch/active");
-    const quantity = batch.initial_quantity == null
-      ? "count not set"
-      : `${batch.initial_quantity} cucumbers`;
     document.getElementById("batch-label").textContent =
-      `B-${String(batch.id).padStart(4, "0")} · ${batch.batch_code} · ${quantity}`;
+      `B-${String(batch.id).padStart(4, "0")} · ${batch.batch_code}`;
   } catch (e) { console.warn(e); }
 }
 
@@ -65,6 +94,10 @@ async function loadSystemStatus() {
     document.getElementById("target-humidity").textContent = `Target ${humidity.min}–${humidity.max}% RH`;
     document.getElementById("climate-range-chip").textContent =
       `${temp.min}–${temp.max}°C · ${humidity.min}–${humidity.max}% RH`;
+    document.getElementById("scan-interval").textContent =
+      `${status.auto_scan_interval_seconds / 60} minutes`;
+    nextAutomaticScanAt = parseApiDate(status.next_auto_scan_at);
+    updateScheduleDisplay();
   } catch (e) { console.warn(e); }
 }
 
@@ -74,7 +107,7 @@ async function loadLatestSensor() {
     document.getElementById("metric-temp").textContent = `${r.temperature_c.toFixed(1)}°C`;
     document.getElementById("metric-humidity").textContent = `${r.humidity_pct.toFixed(1)}%`;
     document.getElementById("correction-log").textContent = r.correction_note
-      ? `${r.correction_note} · ${new Date(r.timestamp).toLocaleTimeString()}`
+      ? r.correction_note
       : "Both readings are within the target ranges.";
 
     const banner = document.getElementById("status-banner");
@@ -98,13 +131,13 @@ async function loadLatestSensor() {
 
 async function loadAlerts() {
   try {
-    const rows = await fetchJSON("/alerts/history?limit=10");
+    const rows = await fetchJSON("/alerts/history?limit=5");
     const tbody = document.querySelector("#alerts-table tbody");
     tbody.innerHTML = "";
     rows.forEach(a => {
       const tr = document.createElement("tr");
       tr.innerHTML = `
-        <td>${new Date(a.sent_at).toLocaleString()}</td>
+        <td>${parseApiDate(a.sent_at).toLocaleString()}</td>
         <td>${a.phone_number}</td>
         <td>${a.bad_count}</td>
         <td>${a.message}</td>
@@ -118,8 +151,8 @@ async function loadAlerts() {
 
 async function loadHistoryChart() {
   try {
-    const rows = await fetchJSON("/sensors/history?hours=24");
-    const labels = rows.map(r => new Date(r.timestamp).toLocaleTimeString());
+    const rows = (await fetchJSON("/sensors/history?hours=24")).slice(-10);
+    const labels = rows.map((_, index) => index + 1);
     const temps = rows.map(r => r.temperature_c);
     const hums = rows.map(r => r.humidity_pct);
 
@@ -138,6 +171,7 @@ async function loadHistoryChart() {
           responsive: true,
           interaction: { mode: "index", intersect: false },
           scales: {
+            x: { title: { display: true, text: "Latest readings" } },
             y: { title: { display: true, text: "°C" } },
             y1: { position: "right", grid: { drawOnChartArea: false }, title: { display: true, text: "%" } },
           },
@@ -171,8 +205,8 @@ async function loadLatestScan() {
         <td class="cond-${s.condition}">${s.condition}</td>
         <td>${s.est_shelf_life_days == null ? "N/A" : s.est_shelf_life_days.toFixed(1)}</td>
         <td>${(s.yolo_confidence * 100).toFixed(1)}%</td>
-        <td>${s.hsi_hue_mean.toFixed(1)}</td>
-        <td>${s.lbp_texture_score.toFixed(2)}</td>`;
+        <td>${s.hsi_hue_mean == null ? "N/A" : s.hsi_hue_mean.toFixed(1)}</td>
+        <td>${s.lbp_texture_score == null ? "N/A" : s.lbp_texture_score.toFixed(2)}</td>`;
       tbody.appendChild(tr);
     });
   } catch (e) {
@@ -187,13 +221,13 @@ async function loadLatestScan() {
 
 async function loadScanHistory() {
   try {
-    const rows = await fetchJSON("/scan/history?limit=15");
+    const rows = await fetchJSON("/scan/history?limit=5");
     const tbody = document.querySelector("#scan-history-table tbody");
     tbody.innerHTML = "";
     rows.forEach(r => {
       const tr = document.createElement("tr");
       tr.innerHTML = `
-        <td>${new Date(r.started_at).toLocaleString()}</td>
+        <td>${parseApiDate(r.started_at).toLocaleString()}</td>
         <td>${r.trigger_type}</td>
         <td>B-${String(r.batch_id).padStart(4, "0")}</td>
         <td>S-${String(r.id).padStart(4, "0")}</td>
@@ -216,7 +250,7 @@ document.getElementById("manual-scan-btn").addEventListener("click", async (e) =
   button.textContent = "Scanning…";
   try {
     await fetchJSON("/scan/manual", { method: "POST" });
-    await Promise.all([loadLatestScan(), loadScanHistory(), loadAlerts()]);
+    await Promise.all([loadSystemStatus(), loadLatestScan(), loadScanHistory(), loadAlerts()]);
   } catch (err) {
     alert("Scan failed: " + err.message);
   } finally {
@@ -247,6 +281,11 @@ document.getElementById("new-batch-btn").addEventListener("click", async (event)
 loadBatch();
 loadSystemStatus();
 refreshAll();
+updateClock();
+updateScheduleDisplay();
+setInterval(updateClock, 1000);
+setInterval(updateScheduleDisplay, 1000);
+setInterval(loadSystemStatus, 5000);
 setInterval(loadLatestSensor, 5000);
 setInterval(loadHistoryChart, 15000);
 setInterval(loadAlerts, 5000);

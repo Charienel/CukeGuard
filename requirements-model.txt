@@ -1,0 +1,4 @@
+keras>=3.13.2,<4
+tensorflow>=2.20,<3
+numpy
+Pillow
