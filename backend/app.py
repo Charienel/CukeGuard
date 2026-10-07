@@ -11,6 +11,7 @@ Serves:
 import asyncio
 import logging
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -19,9 +20,10 @@ from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
+from dotenv import load_dotenv
 
 from .database import (
     init_db, get_db, SessionLocal,
@@ -29,8 +31,11 @@ from .database import (
 )
 from . import iot_controller, vision_pipeline, notifier
 
+load_dotenv()
+
 app = FastAPI(title="CukeGuard API")
 logger = logging.getLogger(__name__)
+OWNER_PHONE = os.getenv("CUKEGUARD_OWNER_PHONE", "").strip()
 
 app.add_middleware(
     CORSMiddleware,
@@ -43,6 +48,7 @@ IOT_POLL_SECONDS = 5
 AUTO_SCAN_MINUTES = max(1, int(os.getenv("CUKEGUARD_AUTO_SCAN_MINUTES", "15")))
 AUTO_SCAN_SECONDS = 60 * AUTO_SCAN_MINUTES
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+HARDWARE_GUIDE = Path(__file__).resolve().parent.parent / "HARDWARE_INTEGRATION.md"
 _next_auto_scan_at: Optional[datetime] = None
 
 
@@ -53,6 +59,69 @@ def _schedule_next_auto_scan():
     )
 
 
+def _climate_alert_details(reading, previous_conditions=()):
+    temp_min, temp_max = iot_controller.TARGET_TEMP_RANGE
+    humidity_min, humidity_max = iot_controller.TARGET_HUMIDITY_RANGE
+    previous = set(previous_conditions)
+    active = set()
+    messages = []
+    if reading.temperature_c > temp_max:
+        active.add("temperature_high")
+    elif "temperature_high" in previous and reading.temperature_c > temp_max - 0.3:
+        active.add("temperature_high")
+    if reading.temperature_c < temp_min:
+        active.add("temperature_low")
+    elif "temperature_low" in previous and reading.temperature_c < temp_min + 0.3:
+        active.add("temperature_low")
+    if reading.humidity_pct < humidity_min:
+        active.add("humidity_low")
+    elif "humidity_low" in previous and reading.humidity_pct < humidity_min + 1.0:
+        active.add("humidity_low")
+    if reading.humidity_pct > humidity_max:
+        active.add("humidity_high")
+    elif "humidity_high" in previous and reading.humidity_pct > humidity_max - 1.0:
+        active.add("humidity_high")
+
+    if "temperature_high" in active:
+        state = "high" if reading.temperature_c > temp_max else "recovering"
+        messages.append(
+            f"Temperature is {state} at {reading.temperature_c:.1f}°C "
+            f"(target {temp_min:.1f}–{temp_max:.1f}°C); "
+            + (
+                f"cooler activated at {reading.peltier_pwm_pct:.0f}%."
+                if reading.peltier_pwm_pct > 0
+                else "cooler is on standby."
+            )
+        )
+    if "temperature_low" in active:
+        state = "low" if reading.temperature_c < temp_min else "recovering"
+        messages.append(
+            f"Temperature is {state} at {reading.temperature_c:.1f}°C "
+            f"(target {temp_min:.1f}–{temp_max:.1f}°C); "
+            "heating hardware is not configured."
+        )
+    if "humidity_low" in active:
+        state = "low" if reading.humidity_pct < humidity_min else "recovering"
+        messages.append(
+            f"Humidity is {state} at {reading.humidity_pct:.1f}% RH "
+            f"(target {humidity_min:.1f}–{humidity_max:.1f}%); "
+            + (
+                "humidifier boosted (mister activated)."
+                if reading.mister_active
+                else "humidifier is on standby."
+            )
+        )
+    if "humidity_high" in active:
+        state = "high" if reading.humidity_pct > humidity_max else "recovering"
+        messages.append(
+            f"Humidity is {state} at {reading.humidity_pct:.1f}% RH "
+            f"(target {humidity_min:.1f}–{humidity_max:.1f}%); "
+            "dehumidification hardware is not configured."
+        )
+    order = ("temperature_high", "temperature_low", "humidity_low", "humidity_high")
+    return tuple(condition for condition in order if condition in active), " ".join(messages)
+
+
 # ---------- Pydantic response/request shapes ----------
 
 class BatchCreate(BaseModel):
@@ -61,8 +130,39 @@ class BatchCreate(BaseModel):
     initial_quantity: Optional[int] = Field(default=None, ge=1)
     target_temp_c: float = 11.0
     target_humidity_pct: float = 95.0
-    owner_phone: Optional[str] = None
+    owner_phone: str = OWNER_PHONE
     notes: Optional[str] = None
+
+    @field_validator("owner_phone")
+    @classmethod
+    def _clean_owner_phone(cls, value: str) -> str:
+        normalized = normalize_owner_phone(value)
+        if normalized != OWNER_PHONE:
+            raise ValueError("The owner phone number is permanently configured")
+        return normalized
+
+
+def normalize_owner_phone(value: str) -> str:
+    compact = re.sub(r"[\s().-]", "", value.strip())
+    if re.fullmatch(r"09\d{9}", compact):
+        compact = "+63" + compact[1:]
+    elif re.fullmatch(r"639\d{9}", compact):
+        compact = "+" + compact
+    if not re.fullmatch(r"\+?\d{7,15}", compact):
+        raise ValueError("Enter a phone number with 7–15 digits, optionally starting with +")
+    return compact
+
+
+class OwnerPhoneUpdate(BaseModel):
+    owner_phone: str
+
+    @field_validator("owner_phone")
+    @classmethod
+    def _clean_owner_phone(cls, value: str) -> str:
+        normalized = normalize_owner_phone(value)
+        if normalized != OWNER_PHONE:
+            raise ValueError("The owner phone number is permanently configured")
+        return normalized
 
 
 class SensorReadingOut(BaseModel):
@@ -81,17 +181,21 @@ class SensorReadingOut(BaseModel):
 
 @app.on_event("startup")
 async def startup():
+    if not OWNER_PHONE:
+        raise RuntimeError("Set CUKEGUARD_OWNER_PHONE in the local .env file before starting CukeGuard")
     init_db()
     db = SessionLocal()
     active = db.query(StorageBatch).filter(StorageBatch.ended_at.is_(None)).first()
     if not active:
         active = StorageBatch(
-            owner_phone="+639000000000",  # placeholder -- set the real number via POST /api/batch
+            owner_phone=OWNER_PHONE,
         )
         db.add(active)
         db.flush()
         active.batch_code = f"BATCH-{active.id:04d}"
-        db.commit()
+    elif active.owner_phone != OWNER_PHONE:
+        active.owner_phone = OWNER_PHONE
+    db.commit()
     db.close()
 
     _schedule_next_auto_scan()
@@ -105,7 +209,16 @@ async def iot_loop():
         try:
             batch = db.query(StorageBatch).filter(StorageBatch.ended_at.is_(None)).first()
             if batch:
-                iot_controller.control_tick(batch, db)
+                reading = iot_controller.control_tick(batch, db)
+                previous_conditions = notifier.active_climate_conditions(batch.id)
+                conditions, message = _climate_alert_details(
+                    reading, previous_conditions
+                )
+                notifier.notify_climate_change(
+                    db, batch, reading, conditions, message
+                )
+        except Exception:
+            logger.exception("Climate monitoring iteration failed")
         finally:
             db.close()
         await asyncio.sleep(IOT_POLL_SECONDS)
@@ -178,9 +291,53 @@ def system_status():
         "components": {
             "sensors": "simulated",
             "camera": "simulated",
+            "stepper": "simulated",
+            "limit_switches": "not_configured",
             "actuators": "simulated",
             "sms": notifier.sms_mode(),
         },
+        "hardware_integration": [
+            {
+                "name": "Pi Camera + MobileNetV2",
+                "detail": "Capture one indexed cucumber crop and classify good/bad with the bundled Keras model.",
+                "status": "simulated",
+            },
+            {
+                "name": "NEMA17 + Raspberry Pi Stepper HAT",
+                "detail": "Home and move one calibrated position at a time. Confirm exact HAT driver/API and motor current.",
+                "status": "simulated",
+            },
+            {
+                "name": "Two limit switches",
+                "detail": "Establish home and travel bounds after verifying wiring and switch polarity.",
+                "status": "not_configured",
+            },
+            {
+                "name": "SHT31-D + DS18B20",
+                "detail": "Read humidity/air temperature over I2C and probe temperature over 1-Wire.",
+                "status": "simulated",
+            },
+            {
+                "name": "TCA9548A multiplexer",
+                "detail": "Use only if needed; configure the verified bus address and channel.",
+                "status": "not_configured",
+            },
+            {
+                "name": "TEC + heatsink fans",
+                "detail": "Verify thermal assembly, rated supply, and MOSFET/load-driver ratings.",
+                "status": "simulated",
+            },
+            {
+                "name": "24V mist maker + relay",
+                "detail": "Verify isolation and moisture-safe placement away from exposed electronics.",
+                "status": "simulated",
+            },
+            {
+                "name": "Power + waterproof lighting",
+                "detail": "Verify load voltage/current, power-supply sizing, fusing, and cable routing.",
+                "status": "needs_verification",
+            },
+        ],
         "climate_ranges": {
             "temperature_c": {
                 "min": iot_controller.TARGET_TEMP_RANGE[0],
@@ -196,6 +353,10 @@ def system_status():
             "heating": False,
             "misting": True,
             "dehumidification": False,
+        },
+        "automation": {
+            "cooler": "simulated automatic control",
+            "humidifier": "simulated automatic control",
         },
     }
 
@@ -221,9 +382,6 @@ def get_active_batch(db: Session = Depends(get_db)):
 @app.post("/api/batch")
 def create_batch(payload: BatchCreate, db: Session = Depends(get_db)):
     current = db.query(StorageBatch).filter(StorageBatch.ended_at.is_(None)).first()
-    inherited_phone = (
-        current.owner_phone if current and current.owner_phone else "+639000000000"
-    )
     if current:
         current.ended_at = datetime.utcnow()
     batch = StorageBatch(
@@ -232,7 +390,7 @@ def create_batch(payload: BatchCreate, db: Session = Depends(get_db)):
         initial_quantity=payload.initial_quantity,
         target_temp_c=payload.target_temp_c,
         target_humidity_pct=payload.target_humidity_pct,
-        owner_phone=payload.owner_phone or inherited_phone,
+        owner_phone=OWNER_PHONE,
         notes=payload.notes,
     )
     db.add(batch)
@@ -246,6 +404,16 @@ def create_batch(payload: BatchCreate, db: Session = Depends(get_db)):
         "batch_code": batch.batch_code,
         "initial_quantity": batch.initial_quantity,
     }
+
+
+@app.patch("/api/batch/active/owner-phone")
+def update_active_owner_phone(payload: OwnerPhoneUpdate, db: Session = Depends(get_db)):
+    batch = db.query(StorageBatch).filter(StorageBatch.ended_at.is_(None)).first()
+    if not batch:
+        raise HTTPException(404, "No active batch")
+    batch.owner_phone = payload.owner_phone
+    db.commit()
+    return {"owner_phone": batch.owner_phone}
 
 
 # ---------- Sensor endpoints ----------
@@ -289,6 +457,8 @@ def latest_reading(db: Session = Depends(get_db)):
         "is_correcting": is_correcting,
         "requires_hardware": requires_hardware,
         "control_status": control_status,
+        "cooler_active": reading.peltier_pwm_pct > 0,
+        "humidifier_active": bool(reading.mister_active),
     }
 
 
@@ -311,6 +481,44 @@ def sensor_history(hours: int = 24, db: Session = Depends(get_db)):
         }
         for r in rows
     ]
+
+
+@app.get("/api/automation/history")
+def automation_history(limit: int = 20, db: Session = Depends(get_db)):
+    today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    rows = (
+        db.query(SensorReading)
+        .filter(
+            SensorReading.timestamp >= today,
+            SensorReading.correction_note.isnot(None),
+        )
+        .order_by(desc(SensorReading.timestamp))
+        .limit(min(max(limit, 1), 100))
+        .all()
+    )
+    count = (
+        db.query(SensorReading)
+        .filter(
+            SensorReading.timestamp >= today,
+            SensorReading.correction_note.isnot(None),
+        )
+        .count()
+    )
+    return {
+        "date": today.date().isoformat(),
+        "count": count,
+        "events": [
+            {
+                "timestamp": row.timestamp.isoformat(),
+                "temperature_c": row.temperature_c,
+                "humidity_pct": row.humidity_pct,
+                "peltier_pwm_pct": row.peltier_pwm_pct,
+                "mister_active": bool(row.mister_active),
+                "note": row.correction_note,
+            }
+            for row in rows
+        ],
+    }
 
 
 # ---------- Scan / vision endpoints ----------
@@ -340,7 +548,7 @@ def latest_scan(db: Session = Depends(get_db)):
         .order_by(CucumberSample.cucumber_number)
         .all()
     )
-    counts = {"good": 0, "bad": 0}
+    counts = {"good": 0, "bad": 0, "needs_inspection": 0}
     for sample in samples:
         if sample.condition in counts:
             counts[sample.condition] += 1
@@ -378,7 +586,10 @@ def scan_history(limit: int = 20, db: Session = Depends(get_db)):
         .limit(limit)
         .all()
     )
-    sample_counts = {row.id: {"good": 0, "bad": 0} for row in rows}
+    sample_counts = {
+        row.id: {"good": 0, "bad": 0, "needs_inspection": 0}
+        for row in rows
+    }
     if sample_counts:
         samples = (
             db.query(CucumberSample.scan_id, CucumberSample.condition)
@@ -386,7 +597,7 @@ def scan_history(limit: int = 20, db: Session = Depends(get_db)):
             .all()
         )
         for scan_id, condition in samples:
-            if condition in ("good", "bad"):
+            if condition in sample_counts[scan_id]:
                 sample_counts[scan_id][condition] += 1
 
     return [
@@ -399,6 +610,7 @@ def scan_history(limit: int = 20, db: Session = Depends(get_db)):
             "detected_count": sum(sample_counts[r.id].values()),
             "good_count": sample_counts[r.id]["good"],
             "bad_count": sample_counts[r.id]["bad"],
+            "needs_inspection_count": sample_counts[r.id]["needs_inspection"],
         }
         for r in rows
     ]
@@ -417,6 +629,7 @@ def alert_history(limit: int = 20, db: Session = Depends(get_db)):
             "message": r.message,
             "bad_count": r.bad_count,
             "delivery_status": r.delivery_status,
+            "alert_type": r.alert_type,
         }
         for r in rows
     ]
@@ -425,6 +638,11 @@ def alert_history(limit: int = 20, db: Session = Depends(get_db)):
 # ---------- Serve frontend ----------
 
 app.mount("/static", StaticFiles(directory=FRONTEND_DIR / "static"), name="static")
+
+
+@app.get("/hardware-integration")
+def hardware_integration_guide():
+    return FileResponse(HARDWARE_GUIDE, media_type="text/markdown")
 
 
 @app.get("/")

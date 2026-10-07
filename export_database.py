@@ -2,6 +2,7 @@
 import argparse
 import os
 import sys
+from bisect import bisect_right
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -212,6 +213,27 @@ def load_rows(filters=None, session_factory=SessionLocal):
             ).order_by(ScanSession.started_at, CucumberSample.scan_id, CucumberSample.cucumber_number).all()
             if active_batch_ids is not None:
                 samples = [row for row in samples if row.batch_id in active_batch_ids]
+            sample_batch_ids = {sample.batch_id for sample in samples}
+            sensor_rows_by_batch = {}
+            if sample_batch_ids:
+                sample_sensor_rows = (
+                    db.query(SensorReading)
+                    .filter(SensorReading.batch_id.in_(sample_batch_ids))
+                    .order_by(SensorReading.timestamp, SensorReading.id)
+                    .all()
+                )
+                for sensor_row in sample_sensor_rows:
+                    sensor_rows_by_batch.setdefault(sensor_row.batch_id, []).append(sensor_row)
+            sensor_at_sample = {}
+            for sample in samples:
+                sensor_rows = sensor_rows_by_batch.get(sample.batch_id, [])
+                sensor_times = [row.timestamp for row in sensor_rows]
+                sensor_index = bisect_right(
+                    sensor_times, sample.scan_session.started_at
+                ) - 1
+                sensor_at_sample[sample.id] = (
+                    sensor_rows[sensor_index] if sensor_index >= 0 else None
+                )
             alerts = _apply_record_filters(
                 db.query(AlertLog), AlertLog.sent_at,
                 AlertLog.batch_id, filters,
@@ -267,6 +289,84 @@ def load_rows(filters=None, session_factory=SessionLocal):
                 if status.split(":", 1)[0].casefold() not in excluded_statuses
             ]
 
+            hourly_aggregates = {}
+            for reading, _, _ in readings:
+                hour_start = reading.timestamp.replace(minute=0, second=0, microsecond=0)
+                aggregate = hourly_aggregates.setdefault(
+                    (reading.batch_id, hour_start),
+                    {
+                        "temperature_sum": 0.0,
+                        "temperature_count": 0,
+                        "humidity_sum": 0.0,
+                        "humidity_count": 0,
+                        "reading_count": 0,
+                    },
+                )
+                aggregate["reading_count"] += 1
+                if reading.temperature_c is not None:
+                    aggregate["temperature_sum"] += reading.temperature_c
+                    aggregate["temperature_count"] += 1
+                if reading.humidity_pct is not None:
+                    aggregate["humidity_sum"] += reading.humidity_pct
+                    aggregate["humidity_count"] += 1
+
+            observed_hourly_climate = {}
+            for (batch_id, hour_start), aggregate in sorted(hourly_aggregates.items()):
+                average_temperature = (
+                    round(aggregate["temperature_sum"] / aggregate["temperature_count"], 2)
+                    if aggregate["temperature_count"] else None
+                )
+                average_humidity = (
+                    round(aggregate["humidity_sum"] / aggregate["humidity_count"], 2)
+                    if aggregate["humidity_count"] else None
+                )
+                observed_hourly_climate.setdefault(batch_id, {})[hour_start] = (
+                    (hour_start, average_temperature, average_humidity, aggregate["reading_count"])
+                )
+
+            hourly_climate_by_batch = {}
+            for batch_id, hourly_records in observed_hourly_climate.items():
+                hour_start = min(hourly_records)
+                last_hour = max(hourly_records)
+                batch_hours = []
+                while hour_start <= last_hour:
+                    batch_hours.append(
+                        hourly_records.get(hour_start, (hour_start, None, None, 0))
+                    )
+                    hour_start += timedelta(hours=1)
+                hourly_climate_by_batch[batch_id] = batch_hours
+
+            highest_observed_cucumber_number = {}
+            for sample in samples:
+                highest_observed_cucumber_number[sample.batch_id] = max(
+                    highest_observed_cucumber_number.get(sample.batch_id, 0),
+                    sample.cucumber_number,
+                )
+            cucumber_hourly_climate = []
+            for batch in batches:
+                if batch.initial_quantity is not None:
+                    cucumber_count = batch.initial_quantity
+                    count_basis = "Declared batch quantity"
+                else:
+                    cucumber_count = highest_observed_cucumber_number.get(batch.id, 0)
+                    count_basis = "Highest cucumber number observed in scans"
+                for cucumber_number in range(1, cucumber_count + 1):
+                    for hour_start, average_temperature, average_humidity, reading_count in (
+                        hourly_climate_by_batch.get(batch.id, ())
+                    ):
+                        cucumber_hourly_climate.append([
+                            *_date_groups(hour_start),
+                            batch.id,
+                            batch.batch_code,
+                            cucumber_number,
+                            hour_start,
+                            average_temperature,
+                            average_humidity,
+                            reading_count,
+                            count_basis,
+                            "Batch-level climate average shared by this batch",
+                        ])
+
             rows = {
                 "batches": [[
                     *_date_groups(row.started_at),
@@ -301,7 +401,11 @@ def load_rows(filters=None, session_factory=SessionLocal):
                     row.yolo_confidence, row.hsi_hue_mean,
                     row.lbp_texture_score, row.condition,
                     row.est_shelf_life_days,
+                    sensor_at_sample[row.id].id if sensor_at_sample[row.id] else None,
+                    sensor_at_sample[row.id].temperature_c if sensor_at_sample[row.id] else None,
+                    sensor_at_sample[row.id].humidity_pct if sensor_at_sample[row.id] else None,
                 ] for row in samples],
+                "cucumber_hourly_climate": cucumber_hourly_climate,
                 "alerts": [[
                     *_date_groups(row.sent_at),
                     row.id, row.batch_id,
@@ -349,6 +453,8 @@ def style_data_sheet(sheet, headers, rows):
                 cell.number_format = "mmmm d"
             if header.startswith("YOLO Confidence") and isinstance(cell.value, (float, int)):
                 cell.number_format = "0.0%"
+            if header.startswith("Average ") and isinstance(cell.value, (float, int)):
+                cell.number_format = "0.00"
             if header == "Alert Status":
                 status = str(cell.value).split(":", 1)[0]
                 if status in ALERT_FILLS:
@@ -400,7 +506,8 @@ def main(argv=None):
     overview.append(["Date hierarchy", "Month > Day > exact record time. Month and Day are Excel dates; use the sheet filters to select periods."])
     overview.append(["Inactive records", "Included unless --active-only is selected."])
     overview.append(["Batch metrics", "Averages and condition counts come from each batch's latest scan within the selected export filters."])
-    for row_number in range(3, 12):
+    overview.append(["Cucumber hourly climate", "Sensor readings are averaged by UTC hour, then repeated for each cucumber number in the batch. Climate sensors measure the batch, not individual cucumbers."])
+    for row_number in range(3, 13):
         overview.cell(row_number, 1).font = Font(bold=True)
     overview["B3"].number_format = "yyyy-mm-dd hh:mm:ss"
     overview["A13"] = "Sheet"
@@ -413,6 +520,7 @@ def main(argv=None):
         ("Sensor Readings", "readings"),
         ("Scan Sessions", "scans"),
         ("Cucumber Samples", "samples"),
+        ("Cucumber Hourly Climate", "cucumber_hourly_climate"),
         ("Alerts", "alerts"),
     ], start=14):
         overview.cell(row_number, 1, label)
@@ -423,9 +531,10 @@ def main(argv=None):
 
     definitions = [
         ("Batches", ["Month", "Day", "Batch ID", "Batch Code", "Initial Quantity", "Started At UTC", "Ended At UTC", "Target Temp C", "Target Humidity Pct", "Owner Phone", "Notes", "Latest Scan ID", "Latest Scan At UTC", "YOLO Confidence (Latest Scan Avg)", "HSI Hue Mean (Latest Scan Avg)", "LBP Texture Score (Latest Scan Avg)", "Condition (Latest Scan)", "Est Shelf Life Days (Latest Scan Avg)"], "batches"),
+        ("Cucumber Hourly Climate", ["Month", "Day", "Batch ID", "Batch Code", "Cucumber Number", "Hour Start UTC", "Average Temperature C", "Average Humidity Pct", "Sensor Readings in Hour", "Cucumber Count Basis", "Measurement Scope"], "cucumber_hourly_climate"),
         ("Sensor Readings", ["Month", "Day", "Reading ID", "Batch ID", "Batch Code", "Timestamp UTC", "Scan ID (latest at/before reading)", "Temperature C", "Humidity Pct", "Peltier PWM Pct", "Mister Active", "Alert Status", "Correction Note"], "readings"),
         ("Scan Sessions", ["Month", "Day", "Scan ID", "Batch ID", "Batch Code", "Started At UTC", "Trigger Type"], "scans"),
-        ("Cucumber Samples", ["Month", "Day", "Sample ID", "Batch ID", "Batch Code", "Scan ID", "Scan Started At UTC", "Cucumber Number", "Track Position MM", "BBox X", "BBox Y", "BBox Width", "BBox Height", "YOLO Confidence", "HSI Hue Mean", "LBP Texture Score", "Condition", "Est Shelf Life Days"], "samples"),
+        ("Cucumber Samples", ["Month", "Day", "Sample ID", "Batch ID", "Batch Code", "Scan ID", "Scan Started At UTC", "Cucumber Number", "Track Position MM", "BBox X", "BBox Y", "BBox Width", "BBox Height", "YOLO Confidence", "HSI Hue Mean", "LBP Texture Score", "Condition", "Est Shelf Life Days", "Climate Reading ID at Scan", "Temperature C at Scan", "Humidity Pct at Scan"], "samples"),
         ("Alerts", ["Month", "Day", "Alert ID", "Batch ID", "Batch Code", "Scan ID", "Sent At UTC", "Phone Number", "Bad Count", "Delivery Status", "Message"], "alerts"),
     ]
     for title, headers, key in definitions:

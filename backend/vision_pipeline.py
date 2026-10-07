@@ -1,28 +1,24 @@
 """
 vision_pipeline.py — cucumber condition detection pipeline.
 
-Right now this SIMULATES a scan pass: the stepper "moves" the carriage,
-a "camera" captures a frame at each position, and detection/classification
-results are generated statistically to look like real YOLO + HSI + LBP output.
-
-TO GO LIVE ON THE PI:
-  - Replace `home_and_scan_positions()` with real NEMA17 stepper control
-    (RPi.GPIO / gpiozero step pulses) to traverse the V-slot track.
-  - Replace `capture_frame()` with a real picamera2 capture.
-    - Replace `detect_and_classify()` with your trained YOLO model
-        (ultralytics) for bounding boxes + confidence, OpenCV for HSI hue
-        extraction, and your LBP texture function, then classify each cucumber
-        as good or bad using your thesis criteria.
-  - Everything else (session bookkeeping, DB writes, API shape) stays the same.
+Keras makes the primary condition prediction. HSI/LBP provides a second opinion
+for uncertain predictions and model-positive good predictions, with conflicts
+sent for inspection instead of being forced into a good/bad result.
 """
 import os
 import random
 from typing import Optional
 
-from . import model_classifier
+import numpy as np
 
+from . import feature_extraction, model_classifier
+
+SECOND_OPINION_CONFIDENCE_MIN = 0.8
+# Kept as an alias for callers that used the previous threshold name.
+DETECTION_CONFIDENCE_MIN = SECOND_OPINION_CONFIDENCE_MIN
 TRACK_LENGTH_MM = 600
-STEP_MM = 100  # one capture every 100mm along the track
+STEP_MM = 100
+
 
 def home_and_scan_positions():
     """SIMULATED right-to-left sweep. Replace with real NEMA17 step sequence."""
@@ -36,9 +32,8 @@ def capture_frame(position_mm: float):
 
 def detect_and_classify(frame: dict, object_count: Optional[int] = None):
     """
-    SIMULATED YOLO detection + HSI/LBP feature fusion + condition classification.
-    Returns 0-2 fake "detections" per frame position, each with the fields
-    your CucumberSample table expects.
+    Real classification path: Keras primary prediction + conditional HSI/LBP review.
+    Returns 0-2 detections per frame with the fields your CucumberSample table expects.
     """
     positive_label = os.getenv("CUKEGUARD_MODEL_POSITIVE_LABEL", "").strip().lower()
     if positive_label:
@@ -57,15 +52,30 @@ def detect_and_classify(frame: dict, object_count: Optional[int] = None):
             positive_label,
             model_path=os.getenv("CUKEGUARD_MODEL_PATH"),
         )
+        model_condition = prediction["condition"]
+        needs_second_opinion = (
+            prediction["confidence"] < SECOND_OPINION_CONFIDENCE_MIN
+            or model_condition == "good"
+        )
+        features = None
+        condition = model_condition
+        if needs_second_opinion:
+            image_array = np.asarray(
+                image.convert("RGB") if hasattr(image, "convert") else image
+            )
+            features = feature_extraction.classify(image_array)
+            if features["condition"] != model_condition:
+                condition = "needs_inspection"
+
         return [{
             "bbox_x": 0.0,
             "bbox_y": 0.0,
             "bbox_w": float(prediction["width"]),
             "bbox_h": float(prediction["height"]),
             "yolo_confidence": prediction["confidence"],
-            "hsi_hue_mean": None,
-            "lbp_texture_score": None,
-            "condition": prediction["condition"],
+            "hsi_hue_mean": features["hsi_hue_mean"] if features else None,
+            "lbp_texture_score": features["lbp_texture_score"] if features else None,
+            "condition": condition,
             "est_shelf_life_days": None,
         }]
 
@@ -84,7 +94,7 @@ def detect_and_classify(frame: dict, object_count: Optional[int] = None):
             "bbox_w": round(random.uniform(60, 140), 1),
             "bbox_h": round(random.uniform(40, 90), 1),
             "yolo_confidence": round(random.uniform(0.72, 0.98), 3),
-            "hsi_hue_mean": round(random.uniform(35, 95), 2),   # green-yellow hue range
+            "hsi_hue_mean": round(random.uniform(35, 95), 2),
             "lbp_texture_score": round(random.uniform(0.1, 0.9), 3),
             "condition": condition,
             "est_shelf_life_days": round(shelf_life_days, 1),
@@ -99,7 +109,7 @@ def run_scan(batch_id: int, expected_count: Optional[int] = None):
     (minus batch_id and scan_id, which the caller assigns after creating the row).
     """
     samples = []
-    counts = {"good": 0, "bad": 0}
+    counts = {"good": 0, "bad": 0, "needs_inspection": 0}
 
     positions = home_and_scan_positions()
     if expected_count is not None and expected_count > 0:

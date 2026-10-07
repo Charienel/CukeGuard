@@ -1,6 +1,7 @@
 import json
 import zipfile
 
+import numpy as np
 import pytest
 
 from backend.model_classifier import (
@@ -82,15 +83,108 @@ def test_verified_mapping_classifies_one_frame_as_one_cucumber(monkeypatch):
         },
     )
 
-    detections = vision_pipeline.detect_and_classify({"image": object(), "position_mm": 200})
+    green_image = np.zeros((64, 64, 3), dtype=np.uint8)
+    green_image[:, :, 1] = 255
+    detections = vision_pipeline.detect_and_classify({
+        "image": green_image,
+        "position_mm": 200,
+    })
 
     assert len(detections) == 1
     assert detections[0]["condition"] == "good"
     assert detections[0]["bbox_w"] == 640
     assert detections[0]["bbox_h"] == 480
-    assert detections[0]["hsi_hue_mean"] is None
-    assert detections[0]["lbp_texture_score"] is None
+    assert detections[0]["hsi_hue_mean"] is not None
+    assert detections[0]["lbp_texture_score"] is not None
     assert detections[0]["est_shelf_life_days"] is None
+
+
+def test_keras_good_with_hsi_good_is_accepted(monkeypatch):
+    monkeypatch.setenv("CUKEGUARD_MODEL_POSITIVE_LABEL", "good")
+    monkeypatch.setattr(
+        vision_pipeline.model_classifier,
+        "predict_image",
+        lambda *args, **kwargs: {
+            "condition": "good", "confidence": 0.95, "width": 80, "height": 60,
+        },
+    )
+    monkeypatch.setattr(
+        vision_pipeline.feature_extraction,
+        "classify",
+        lambda image: {
+            "condition": "good", "hsi_hue_mean": 110.0, "lbp_texture_score": 2.0,
+        },
+    )
+
+    detections = vision_pipeline.detect_and_classify({"image": np.zeros((8, 8, 3), dtype=np.uint8)})
+
+    assert detections[0]["condition"] == "good"
+    assert detections[0]["hsi_hue_mean"] == 110.0
+
+
+def test_keras_good_with_hsi_bad_requires_inspection(monkeypatch):
+    monkeypatch.setenv("CUKEGUARD_MODEL_POSITIVE_LABEL", "good")
+    monkeypatch.setattr(
+        vision_pipeline.model_classifier,
+        "predict_image",
+        lambda *args, **kwargs: {
+            "condition": "good", "confidence": 0.95, "width": 80, "height": 60,
+        },
+    )
+    monkeypatch.setattr(
+        vision_pipeline.feature_extraction,
+        "classify",
+        lambda image: {
+            "condition": "bad", "hsi_hue_mean": 55.0, "lbp_texture_score": 35.0,
+        },
+    )
+
+    detections = vision_pipeline.detect_and_classify({"image": np.zeros((8, 8, 3), dtype=np.uint8)})
+
+    assert detections[0]["condition"] == "needs_inspection"
+
+
+def test_low_confidence_disagreement_requires_inspection(monkeypatch):
+    monkeypatch.setenv("CUKEGUARD_MODEL_POSITIVE_LABEL", "good")
+    monkeypatch.setattr(
+        vision_pipeline.model_classifier,
+        "predict_image",
+        lambda *args, **kwargs: {
+            "condition": "bad", "confidence": 0.65, "width": 80, "height": 60,
+        },
+    )
+    monkeypatch.setattr(
+        vision_pipeline.feature_extraction,
+        "classify",
+        lambda image: {
+            "condition": "good", "hsi_hue_mean": 110.0, "lbp_texture_score": 2.0,
+        },
+    )
+
+    detections = vision_pipeline.detect_and_classify({"image": np.zeros((8, 8, 3), dtype=np.uint8)})
+
+    assert detections[0]["condition"] == "needs_inspection"
+
+
+def test_confident_keras_bad_skips_second_opinion(monkeypatch):
+    monkeypatch.setenv("CUKEGUARD_MODEL_POSITIVE_LABEL", "good")
+    monkeypatch.setattr(
+        vision_pipeline.model_classifier,
+        "predict_image",
+        lambda *args, **kwargs: {
+            "condition": "bad", "confidence": 0.95, "width": 80, "height": 60,
+        },
+    )
+    monkeypatch.setattr(
+        vision_pipeline.feature_extraction,
+        "classify",
+        lambda image: pytest.fail("HSI/LBP should not run for a confident bad prediction"),
+    )
+
+    detections = vision_pipeline.detect_and_classify({"image": np.zeros((8, 8, 3), dtype=np.uint8)})
+
+    assert detections[0]["condition"] == "bad"
+    assert detections[0]["hsi_hue_mean"] is None
 
 
 def test_verified_mapping_requires_an_image_frame(monkeypatch):

@@ -26,6 +26,13 @@ from urllib.request import Request, urlopen
 
 from .database import AlertLog
 
+_active_climate_conditions: dict[int, tuple[str, ...]] = {}
+
+
+def active_climate_conditions(batch_id: int) -> tuple[str, ...]:
+    """Return the alert state used to apply recovery hysteresis."""
+    return _active_climate_conditions.get(batch_id, ())
+
 
 def sms_mode() -> str:
     """Return the configured SMS mode without exposing provider credentials."""
@@ -166,6 +173,48 @@ def notify_bad_condition(
         message=message,
         bad_count=len(bad_cucumber_numbers),
         delivery_status=status,
+        alert_type="condition",
+    )
+    db.add(alert)
+    db.commit()
+    db.refresh(alert)
+    return alert
+
+
+def notify_climate_change(
+    db, batch, reading, conditions: tuple[str, ...], message: str
+) -> AlertLog | None:
+    """Send one climate notice when an excursion starts, changes, or clears."""
+    previous = _active_climate_conditions.get(batch.id, ())
+    if conditions == previous:
+        return None
+    _active_climate_conditions[batch.id] = conditions
+    if not conditions and not previous:
+        return None
+
+    phone = batch.owner_phone or "UNSET-NUMBER"
+    if conditions:
+        body = f"CukeGuard Climate Alert: Batch B-{batch.id:04d} ({batch.batch_code}). {message}"
+    else:
+        body = (
+            f"CukeGuard Climate Update: Batch B-{batch.id:04d} ({batch.batch_code}) "
+            "has returned to the target temperature and humidity ranges."
+        )
+    if phone in {"UNSET-NUMBER", "+639000000000"} and sms_mode() != "simulated":
+        status = "failed: owner phone is not configured"
+        print(f"[SMS FAILED] Climate alert not sent; configure the batch owner's phone number.")
+    else:
+        status = send_sms(phone, body)
+
+    alert = AlertLog(
+        batch_id=batch.id,
+        scan_session_id=None,
+        sent_at=reading.timestamp,
+        phone_number=phone,
+        message=body,
+        bad_count=0,
+        delivery_status=status,
+        alert_type="climate",
     )
     db.add(alert)
     db.commit()

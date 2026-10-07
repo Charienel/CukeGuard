@@ -144,6 +144,16 @@ def test_export_filters_rows_and_associates_sensor_reading_with_prior_scan(sessi
         [0.8, 75.0, 0.4, "bad", 2.0],
         [0.9, 45.0, 0.2, "good", 14.0],
     ]
+    assert all(sample[18] is not None for sample in rows["samples"])
+    assert [sample[19:21] for sample in rows["samples"]] == [
+        [11.0, 92.0],
+        [11.0, 92.0],
+    ]
+    hourly_rows = rows["cucumber_hourly_climate"]
+    assert len(hourly_rows) == 2
+    assert all(row[2] == batch_a.id for row in hourly_rows)
+    assert all(row[9] == "Highest cucumber number observed in scans" for row in hourly_rows)
+    assert all(row[6:9] == [13.0, 92.0, 1] for row in hourly_rows)
 
     active_rows, _ = load_rows(
         ExportFilters(active_only=True), session_factory=session_factory
@@ -152,6 +162,80 @@ def test_export_filters_rows_and_associates_sensor_reading_with_prior_scan(sessi
     assert {reading[3] for reading in active_rows["readings"]} == {batch_a.id}
     assert {scan[3] for scan in active_rows["scans"]} == {batch_a.id}
     assert {sample[3] for sample in active_rows["samples"]} == {batch_a.id}
+
+
+def test_hourly_climate_averages_and_repeats_for_declared_cucumbers(session_factory):
+    db = session_factory()
+    batch = StorageBatch(
+        batch_code="BATCH-HOURLY",
+        initial_quantity=2,
+        started_at=datetime(2026, 1, 1),
+    )
+    db.add(batch)
+    db.flush()
+    db.add_all([
+        SensorReading(
+            batch_id=batch.id,
+            timestamp=datetime(2026, 1, 1, 7),
+            temperature_c=11.0,
+            humidity_pct=92.0,
+            peltier_pwm_pct=0,
+            mister_active=0,
+        ),
+        SensorReading(
+            batch_id=batch.id,
+            timestamp=datetime(2026, 1, 1, 7, 30),
+            temperature_c=12.0,
+            humidity_pct=94.0,
+            peltier_pwm_pct=0,
+            mister_active=0,
+        ),
+        SensorReading(
+            batch_id=batch.id,
+            timestamp=datetime(2026, 1, 1, 8),
+            temperature_c=14.0,
+            humidity_pct=90.0,
+            peltier_pwm_pct=20,
+            mister_active=0,
+        ),
+        SensorReading(
+            batch_id=batch.id,
+            timestamp=datetime(2026, 1, 1, 10),
+            temperature_c=10.0,
+            humidity_pct=88.0,
+            peltier_pwm_pct=0,
+            mister_active=0,
+        ),
+    ])
+    db.commit()
+    db.close()
+
+    rows, _ = load_rows(session_factory=session_factory)
+    hourly_rows = rows["cucumber_hourly_climate"]
+
+    assert len(hourly_rows) == 8
+    assert [row[4] for row in hourly_rows] == [1, 1, 1, 1, 2, 2, 2, 2]
+    assert [row[5] for row in hourly_rows] == [
+        datetime(2026, 1, 1, 7),
+        datetime(2026, 1, 1, 8),
+        datetime(2026, 1, 1, 9),
+        datetime(2026, 1, 1, 10),
+        datetime(2026, 1, 1, 7),
+        datetime(2026, 1, 1, 8),
+        datetime(2026, 1, 1, 9),
+        datetime(2026, 1, 1, 10),
+    ]
+    assert [row[6:9] for row in hourly_rows] == [
+        [11.5, 93.0, 2],
+        [14.0, 90.0, 1],
+        [None, None, 0],
+        [10.0, 88.0, 1],
+        [11.5, 93.0, 2],
+        [14.0, 90.0, 1],
+        [None, None, 0],
+        [10.0, 88.0, 1],
+    ]
+    assert all(row[9] == "Declared batch quantity" for row in hourly_rows)
 
 
 def test_export_highlights_sensor_alert_statuses():

@@ -56,13 +56,15 @@ def plan_corrections(temp: float, humidity: float) -> tuple[float, bool, list[st
     peltier_pwm = 0.0
     if temp > temp_max:
         peltier_pwm = min(100.0, (temp - temp_max) * 40)
-        notes.append(f"Temperature high; cooling at {peltier_pwm:.0f}%")
+        notes.append(
+            f"Temperature high; cooler activated (cooling at {peltier_pwm:.0f}%)"
+        )
     elif temp < temp_min:
         notes.append("Temperature low; heating hardware required")
 
     mister_active = humidity < humidity_min
     if mister_active:
-        notes.append("Humidity low; mister on")
+        notes.append("Humidity low; humidifier boosted (mister on)")
     elif humidity > humidity_max:
         notes.append("Humidity high; dehumidification hardware required")
 

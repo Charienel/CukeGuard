@@ -4,14 +4,19 @@ STORAGE_BATCH -> SCAN_SESSION -> CUCUMBER_SAMPLE
 STORAGE_BATCH -> SENSOR_READING
 """
 from datetime import datetime
+import os
 from sqlalchemy import (
     create_engine, Column, Integer, String, Float, DateTime, ForeignKey, inspect
 )
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
+from sqlalchemy.pool import StaticPool
 
-DATABASE_URL = "sqlite:///./cukeguard.db"
+DATABASE_URL = os.getenv("CUKEGUARD_DATABASE_URL", "sqlite:///./cukeguard.db")
+engine_options = {"connect_args": {"check_same_thread": False}}
+if DATABASE_URL in {"sqlite://", "sqlite:///:memory:"}:
+    engine_options["poolclass"] = StaticPool
 
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+engine = create_engine(DATABASE_URL, **engine_options)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -82,7 +87,7 @@ class CucumberSample(Base):
     yolo_confidence = Column(Float)
     hsi_hue_mean = Column(Float)
     lbp_texture_score = Column(Float)
-    condition = Column(String)             # "good" | "bad"
+    condition = Column(String)             # "good" | "bad" | "needs_inspection"
     est_shelf_life_days = Column(Float)
 
     batch = relationship("StorageBatch", back_populates="samples")
@@ -90,7 +95,7 @@ class CucumberSample(Base):
 
 
 class AlertLog(Base):
-    """Record of every SMS sent to the owner when a bad cucumber is detected."""
+    """Record owner notifications for cucumber condition and climate events."""
     __tablename__ = "alert_log"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -101,6 +106,7 @@ class AlertLog(Base):
     message = Column(String)
     bad_count = Column(Integer, default=0)
     delivery_status = Column(String, default="simulated")  # "submitted" | "simulated" | "failed"
+    alert_type = Column(String, nullable=False, default="condition")
 
     batch = relationship("StorageBatch", back_populates="alerts")
 
@@ -190,6 +196,14 @@ def init_db():
             "UPDATE alert_log SET delivery_status = 'simulated' "
             "WHERE delivery_status = 'sent'"
         )
+        alert_columns = {
+            column["name"] for column in inspector.get_columns("alert_log")
+        }
+        if "alert_type" not in alert_columns:
+            connection.exec_driver_sql(
+                'ALTER TABLE "alert_log" ADD COLUMN "alert_type" '
+                "VARCHAR NOT NULL DEFAULT 'condition'"
+            )
 
 
 def get_db():

@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>CukeGuard Dashboard</title>
-<link rel="stylesheet" href="/static/style.css?v=7" />
+<link rel="stylesheet" href="/static/style.css?v=14" />
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 </head>
 <body>
@@ -48,7 +48,7 @@
         <span class="metric-target" id="target-humidity">Target 90–95% RH</span>
       </div>
       <div class="metric-card">
-        <span class="metric-label">Good / Bad Inside</span>
+        <span class="metric-label">Good / Bad / Review</span>
         <span class="metric-value" id="metric-condition">--/--</span>
         <span class="metric-target">latest scan</span>
       </div>
@@ -56,6 +56,48 @@
         <span class="metric-label">Freshness Goal</span>
         <span class="metric-value">10–18 d</span>
         <span class="metric-target">Target only; not a measured forecast</span>
+      </div>
+    </section>
+
+    <section class="panel vision-panel">
+      <div class="panel-heading">
+        <div>
+          <h2>Live Camera &amp; Cucumber Condition</h2>
+          <p class="panel-subtitle">Local camera preview and a shelf map sized to the latest scan count</p>
+        </div>
+        <span class="range-chip">Good / Bad / Needs inspection</span>
+      </div>
+      <div class="vision-grid">
+        <div class="camera-column">
+          <div class="camera-frame">
+            <video id="camera-preview" autoplay muted playsinline></video>
+            <div class="camera-placeholder" id="camera-placeholder">
+              <span>CAMERA PREVIEW</span>
+              <small>Start the local camera to view its live feed</small>
+            </div>
+          </div>
+          <div class="camera-controls">
+            <button id="start-camera-btn" class="btn-secondary" type="button">Start Camera</button>
+            <button id="stop-camera-btn" class="btn-secondary" type="button" disabled>Stop Camera</button>
+            <span id="camera-status" role="status">Camera not started</span>
+          </div>
+          <p class="capability-note">Browser preview only. It is not sent to the server or analyzed by the current classifier.</p>
+        </div>
+        <div class="scan-map-column">
+          <div class="scan-map-heading">
+            <strong>Latest scan location map</strong>
+            <span id="scan-map-meta" aria-live="polite">Waiting for scan…</span>
+          </div>
+          <div class="scan-map">
+            <svg id="scan-map-svg" viewBox="0 0 800 270" role="img" aria-label="Latest scan shelf map">
+              <g id="scan-map-boxes"></g>
+            </svg>
+          </div>
+          <div id="bad-location-list" class="bad-location-list" aria-live="polite">
+            <p>No scan locations yet.</p>
+          </div>
+          <p class="capability-note">The map shows one cartoon for each cucumber reported by the latest scan and refreshes automatically. Demo scan counts and conditions are simulated; real camera counting requires a connected, validated cucumber detector.</p>
+        </div>
       </div>
     </section>
 
@@ -85,12 +127,48 @@
       </div>
     </section>
 
+    <section class="panel automation-panel">
+      <div class="panel-heading">
+        <div>
+          <h2>Automatic Climate Adjustment</h2>
+          <p class="panel-subtitle">Closed-loop control status and today's correction log (UTC)</p>
+        </div>
+        <span class="range-chip">Automatic · simulated actuators</span>
+      </div>
+      <div class="automation-status">
+        <div class="actuator-card">
+          <span class="detail-label">Cooler</span>
+          <strong id="cooler-state" class="actuator-state">Waiting for sensor reading</strong>
+          <small id="cooler-detail">Temperature target 10–12.5°C</small>
+        </div>
+        <div class="actuator-card">
+          <span class="detail-label">Humidifier</span>
+          <strong id="humidifier-state" class="actuator-state">Waiting for sensor reading</strong>
+          <small id="humidifier-detail">Humidity target 90–95% RH</small>
+        </div>
+        <div class="actuator-card adjustment-count">
+          <span class="detail-label">Adjustments today</span>
+          <strong id="adjustment-count">0</strong>
+          <small>Sensor-loop corrections recorded</small>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table id="automation-table">
+          <thead>
+            <tr><th>Time</th><th>Temperature</th><th>Humidity</th><th>Automatic action</th><th>Mode</th></tr>
+          </thead>
+          <tbody><tr><td colspan="5">Waiting for adjustment history…</td></tr></tbody>
+        </table>
+      </div>
+      <p class="capability-note">The controller turns cooling on above the temperature band and misting on below the humidity band. Heating and dehumidification are not installed; those out-of-range conditions are reported but cannot be corrected by this prototype.</p>
+    </section>
+
     <section class="panel alerts-panel">
       <h2>Owner Alerts (SMS)</h2>
       <div class="table-wrap">
         <table id="alerts-table">
           <thead>
-            <tr><th>Time</th><th>Phone</th><th>Bad Count</th><th>Message</th><th>Status</th></tr>
+            <tr><th>Time</th><th>Type</th><th>Phone</th><th>Message</th><th>Status</th></tr>
           </thead>
           <tbody></tbody>
         </table>
@@ -118,7 +196,7 @@
       <div class="table-wrap">
         <table id="scan-history-table">
           <thead>
-            <tr><th>Time</th><th>Trigger</th><th>Batch ID</th><th>Scan ID</th><th>Detected</th><th>Good</th><th>Bad</th></tr>
+            <tr><th>Time</th><th>Trigger</th><th>Batch ID</th><th>Scan ID</th><th>Detected</th><th>Good</th><th>Bad</th><th>Review</th></tr>
           </thead>
           <tbody></tbody>
         </table>
@@ -126,6 +204,6 @@
     </section>
   </main>
 
-  <script src="/static/app.js?v=12"></script>
+  <script src="/static/app.js?v=21"></script>
 </body>
 </html>
