@@ -45,7 +45,7 @@ app.add_middleware(
 )
 
 IOT_POLL_SECONDS = 5
-AUTO_SCAN_MINUTES = max(1, int(os.getenv("CUKEGUARD_AUTO_SCAN_MINUTES", "15")))
+AUTO_SCAN_MINUTES = max(1, int(os.getenv("CUKEGUARD_AUTO_SCAN_MINUTES", "180")))
 AUTO_SCAN_SECONDS = 60 * AUTO_SCAN_MINUTES
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 HARDWARE_GUIDE = Path(__file__).resolve().parent.parent / "HARDWARE_INTEGRATION.md"
@@ -120,6 +120,17 @@ def _climate_alert_details(reading, previous_conditions=()):
         )
     order = ("temperature_high", "temperature_low", "humidity_low", "humidity_high")
     return tuple(condition for condition in order if condition in active), " ".join(messages)
+
+
+def _scan_on_climate_excursion(batch, db, conditions, previous_conditions):
+    """Run one immediate scan when a new climate alert condition becomes active."""
+    if not set(conditions).difference(previous_conditions):
+        return None
+    logger.warning(
+        "Climate excursion detected for batch %s; triggering an immediate camera scan",
+        batch.id,
+    )
+    return _execute_scan(batch.id, db, trigger_type="climate_override")
 
 
 # ---------- Pydantic response/request shapes ----------
@@ -216,6 +227,9 @@ async def iot_loop():
                 )
                 notifier.notify_climate_change(
                     db, batch, reading, conditions, message
+                )
+                _scan_on_climate_excursion(
+                    batch, db, conditions, previous_conditions
                 )
         except Exception:
             logger.exception("Climate monitoring iteration failed")

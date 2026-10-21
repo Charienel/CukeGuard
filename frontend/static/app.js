@@ -31,6 +31,12 @@ function updateScheduleDisplay() {
     output.textContent = "Capture due";
     return;
   }
+  if (secondsRemaining >= 3600) {
+    const hours = Math.floor(secondsRemaining / 3600);
+    const minutes = Math.floor((secondsRemaining % 3600) / 60);
+    output.textContent = `${hours}h ${String(minutes).padStart(2, "0")}m remaining`;
+    return;
+  }
   const minutes = Math.floor(secondsRemaining / 60);
   const seconds = secondsRemaining % 60;
   output.textContent = `${minutes}:${String(seconds).padStart(2, "0")} remaining`;
@@ -99,8 +105,11 @@ async function loadSystemStatus() {
     document.getElementById("target-humidity").textContent = `Target ${humidity.min}–${humidity.max}% RH`;
     document.getElementById("climate-range-chip").textContent =
       `${temp.min}–${temp.max}°C · ${humidity.min}–${humidity.max}% RH`;
+    const intervalMinutes = status.auto_scan_interval_seconds / 60;
     document.getElementById("scan-interval").textContent =
-      `${status.auto_scan_interval_seconds / 60} minutes`;
+      intervalMinutes % 60 === 0
+        ? `${intervalMinutes / 60} ${intervalMinutes === 60 ? "hour" : "hours"}`
+        : `${intervalMinutes} minutes`;
     nextAutomaticScanAt = parseApiDate(status.next_auto_scan_at);
     updateScheduleDisplay();
   } catch (e) { console.warn(e); }
@@ -448,7 +457,7 @@ async function loadScanHistory() {
       const tr = document.createElement("tr");
       tr.innerHTML = `
         <td>${parseApiDate(r.started_at).toLocaleString()}</td>
-        <td>${r.trigger_type}</td>
+        <td>${r.trigger_type === "climate_override" ? "Climate override" : r.trigger_type}</td>
         <td>B-${String(r.batch_id).padStart(4, "0")}</td>
         <td>S-${String(r.id).padStart(4, "0")}</td>
         <td>${r.detected_count}</td>

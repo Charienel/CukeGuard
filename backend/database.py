@@ -65,7 +65,7 @@ class ScanSession(Base):
     id = Column(Integer, primary_key=True, index=True)
     batch_id = Column(Integer, ForeignKey("storage_batch.id"))
     started_at = Column(DateTime, default=datetime.utcnow)
-    trigger_type = Column(String, default="scheduled")  # "scheduled" | "manual"
+    trigger_type = Column(String, default="scheduled")  # "scheduled" | "manual" | "climate_override"
 
     batch = relationship("StorageBatch", back_populates="scan_sessions")
     samples = relationship("CucumberSample", back_populates="scan_session")

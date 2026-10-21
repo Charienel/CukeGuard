@@ -16,6 +16,7 @@ from backend.app import (
     OWNER_PHONE,
     OwnerPhoneUpdate,
     _climate_alert_details,
+    _scan_on_climate_excursion,
     app,
 )
 from backend.database import Base, CucumberSample, SessionLocal, engine
@@ -39,7 +40,7 @@ def test_system_status_reports_demo_mode_and_target_bands(client):
     assert response.status_code == 200
     data = response.json()
     assert data["mode"] == "simulation"
-    assert data["auto_scan_interval_seconds"] == AUTO_SCAN_SECONDS == 900
+    assert data["auto_scan_interval_seconds"] == AUTO_SCAN_SECONDS == 10800
     next_scan = datetime.fromisoformat(data["next_auto_scan_at"])
     assert next_scan.tzinfo == timezone.utc
     assert 0 < (next_scan - datetime.now(timezone.utc)).total_seconds() <= AUTO_SCAN_SECONDS
@@ -52,6 +53,34 @@ def test_system_status_reports_demo_mode_and_target_bands(client):
         for component in data["hardware_integration"]
         if component["name"] == "NEMA17 + Raspberry Pi Stepper HAT"
     )
+
+
+def test_climate_excursion_triggers_immediate_scan_once(monkeypatch):
+    batch = SimpleNamespace(id=42)
+    db = object()
+    scan_calls = []
+    monkeypatch.setattr(
+        "backend.app._execute_scan",
+        lambda batch_id, session, trigger_type: scan_calls.append(
+            (batch_id, session, trigger_type)
+        ),
+    )
+
+    _scan_on_climate_excursion(batch, db, ("humidity_low",), ())
+    _scan_on_climate_excursion(
+        batch, db, ("humidity_low",), ("humidity_low",)
+    )
+    _scan_on_climate_excursion(
+        batch,
+        db,
+        ("humidity_low", "temperature_high"),
+        ("humidity_low",),
+    )
+
+    assert scan_calls == [
+        (42, db, "climate_override"),
+        (42, db, "climate_override"),
+    ]
 
 
 def test_hardware_integration_guide_is_served(client):
