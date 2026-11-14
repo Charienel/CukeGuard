@@ -48,6 +48,12 @@ def test_system_status_reports_demo_mode_and_target_bands(client):
     assert data["climate_ranges"]["humidity_pct"] == {"min": 90.0, "max": 95.0}
     assert data["components"]["stepper"] == "simulated"
     assert data["components"]["limit_switches"] == "not_configured"
+    assert data["components"]["cabin_light"] == "simulated"
+    assert any(
+        component["name"] == "Cabin LED strip"
+        and component["status"] == "simulated"
+        for component in data["hardware_integration"]
+    )
     assert any(
         "exact HAT driver/API" in component["detail"]
         for component in data["hardware_integration"]
@@ -343,6 +349,57 @@ def test_scan_uses_batch_expected_quantity(monkeypatch):
 
     assert len(samples) == 3
     assert counts == {"good": 3, "bad": 0, "needs_inspection": 0}
+
+
+def test_cabin_light_simulator_tracks_requested_state():
+    iot_controller.set_cabin_light(True)
+    assert iot_controller._sim_state["cabin_light"] is True
+
+    iot_controller.set_cabin_light(False)
+    assert iot_controller._sim_state["cabin_light"] is False
+
+
+def test_scan_light_stays_on_during_movement_and_capture(monkeypatch):
+    events = []
+    monkeypatch.setattr(
+        iot_controller, "set_cabin_light", lambda active: events.append(("light", active))
+    )
+    monkeypatch.setattr(
+        vision_pipeline,
+        "home_and_scan_positions",
+        lambda: events.append(("move", None)) or [100],
+    )
+    monkeypatch.setattr(
+        vision_pipeline,
+        "capture_frame",
+        lambda position: events.append(("capture", position)) or {"position_mm": position},
+    )
+    monkeypatch.setattr(vision_pipeline, "detect_and_classify", lambda frame: [])
+
+    vision_pipeline.run_scan(batch_id=1)
+
+    assert events == [
+        ("light", True),
+        ("move", None),
+        ("capture", 100),
+        ("light", False),
+    ]
+
+
+def test_scan_light_turns_off_when_capture_fails(monkeypatch):
+    light_states = []
+    monkeypatch.setattr(iot_controller, "set_cabin_light", light_states.append)
+    monkeypatch.setattr(vision_pipeline, "home_and_scan_positions", lambda: [100])
+
+    def fail_capture(position):
+        raise RuntimeError("camera unavailable")
+
+    monkeypatch.setattr(vision_pipeline, "capture_frame", fail_capture)
+
+    with pytest.raises(RuntimeError, match="camera unavailable"):
+        vision_pipeline.run_scan(batch_id=1)
+
+    assert light_states == [True, False]
 
 
 def test_active_batch_is_available_after_startup(client):

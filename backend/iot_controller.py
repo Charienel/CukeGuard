@@ -23,7 +23,13 @@ TARGET_TEMP_RANGE = (10.0, 12.5)
 TARGET_HUMIDITY_RANGE = (90.0, 95.0)
 DATA_MODE = "simulation"
 
-_sim_state = {"temp": 11.5, "humidity": 92.5, "peltier_pwm": 0.0, "mister": False}
+_sim_state = {
+    "temp": 11.5,
+    "humidity": 92.5,
+    "peltier_pwm": 0.0,
+    "mister": False,
+    "cabin_light": False,
+}
 
 
 def read_temperature_humidity():
@@ -45,6 +51,11 @@ def set_mister(active: bool):
     _sim_state["mister"] = active
     if active:
         _sim_state["humidity"] += 1.2
+
+
+def set_cabin_light(active: bool):
+    """SIMULATED cabin LED write. Replace with a verified LED driver interface."""
+    _sim_state["cabin_light"] = active
 
 
 def plan_corrections(temp: float, humidity: float) -> tuple[float, bool, list[str]]:

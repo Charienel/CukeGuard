@@ -307,6 +307,7 @@ def system_status():
             "camera": "simulated",
             "stepper": "simulated",
             "limit_switches": "not_configured",
+            "cabin_light": "simulated",
             "actuators": "simulated",
             "sms": notifier.sms_mode(),
         },
@@ -347,9 +348,9 @@ def system_status():
                 "status": "simulated",
             },
             {
-                "name": "Power + waterproof lighting",
-                "detail": "Verify load voltage/current, power-supply sizing, fusing, and cable routing.",
-                "status": "needs_verification",
+                "name": "Cabin LED strip",
+                "detail": "Light the cabin for the full scan; verify strip voltage/current, driver, fusing, and cable routing before hardware control.",
+                "status": "simulated",
             },
         ],
         "climate_ranges": {

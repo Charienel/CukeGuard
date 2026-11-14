@@ -18,7 +18,7 @@ electrical ratings are inferred from product names.
 | TEC1-12706, CPU heatsinks/fans, MOSFET module | `backend/iot_controller.py:apply_peltier_pwm()` | Verify polarity, current, driver ratings, heatsink capacity, airflow, and temperature feedback. A TEC is a high-current load; never power it from Pi GPIO. |
 | 24V mist maker + opto-isolated relay | `backend/iot_controller.py:set_mister()` | Verify relay input compatibility, load current, isolation, supply, water handling, and safe location away from exposed electronics. |
 | 12V/24V supplies + 5V buck | Power design, not Python | Check each device's voltage/current requirements, common-ground/isolation requirements, supply headroom, fusing, and wire gauge against its datasheet. |
-| Waterproof LED strip | Optional lighting adapter | Verify strip voltage/current, switching method, moisture protection, and cable routing. |
+| Cabin LED strip | `backend/iot_controller.py:set_cabin_light()` called by `backend/vision_pipeline.py:run_scan()` | The strip is simulated on for the full scan and switched off in cleanup. Verify strip voltage/current, driver, moisture protection, fusing, and cable routing before implementing hardware control. |
 
 ## Indexed scan behavior
 
@@ -29,7 +29,9 @@ The intended scan is one cucumber per indexed stop:
 2. Move the calibrated number of steps to position #1; stop and allow the
    carriage/camera to settle.
 3. Capture a frame, crop the single cucumber, convert it to RGB, and classify
-   the crop with the verified MobileNetV2 `.keras` model.
+   the crop with the verified MobileNetV2 `.keras` model. The cabin light is on
+   during homing, movement, and capture, and is switched off when the scan ends
+   or fails.
 4. Save that numbered sample, refresh the latest-scan map, and alert immediately
    for a bad result (rather than waiting for the full shelf scan).
 5. Repeat by one calibrated position at a time. Stop at the far-end switch.

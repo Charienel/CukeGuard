@@ -11,7 +11,7 @@ from typing import Optional
 
 import numpy as np
 
-from . import feature_extraction, model_classifier
+from . import feature_extraction, iot_controller, model_classifier
 
 SECOND_OPINION_CONFIDENCE_MIN = 0.8
 # Kept as an alias for callers that used the previous threshold name.
@@ -108,35 +108,39 @@ def run_scan(batch_id: int, expected_count: Optional[int] = None):
     `samples` is a list of dicts matching CucumberSample columns
     (minus batch_id and scan_id, which the caller assigns after creating the row).
     """
-    samples = []
-    counts = {"good": 0, "bad": 0, "needs_inspection": 0}
+    iot_controller.set_cabin_light(True)
+    try:
+        samples = []
+        counts = {"good": 0, "bad": 0, "needs_inspection": 0}
 
-    positions = home_and_scan_positions()
-    if expected_count is not None and expected_count > 0:
-        for cucumber_index in range(expected_count):
-            position_index = min(
-                cucumber_index * len(positions) // expected_count,
-                len(positions) - 1,
-            )
-            pos = positions[position_index]
-            for det in detect_and_classify(capture_frame(pos), object_count=1):
-                det["track_position_mm"] = pos
-                samples.append(det)
-    else:
-        for pos in positions:
-            frame = capture_frame(pos)
-            for det in detect_and_classify(frame):
-                det["track_position_mm"] = pos
-                samples.append(det)
+        positions = home_and_scan_positions()
+        if expected_count is not None and expected_count > 0:
+            for cucumber_index in range(expected_count):
+                position_index = min(
+                    cucumber_index * len(positions) // expected_count,
+                    len(positions) - 1,
+                )
+                pos = positions[position_index]
+                for det in detect_and_classify(capture_frame(pos), object_count=1):
+                    det["track_position_mm"] = pos
+                    samples.append(det)
+        else:
+            for pos in positions:
+                frame = capture_frame(pos)
+                for det in detect_and_classify(frame):
+                    det["track_position_mm"] = pos
+                    samples.append(det)
 
-    for sample in samples:
-        counts[sample["condition"]] += 1
+        for sample in samples:
+            counts[sample["condition"]] += 1
 
-    samples.sort(
-        key=lambda sample: (sample["track_position_mm"], sample["bbox_x"]),
-        reverse=True,
-    )
-    for cucumber_number, sample in enumerate(samples, start=1):
-        sample["cucumber_number"] = cucumber_number
+        samples.sort(
+            key=lambda sample: (sample["track_position_mm"], sample["bbox_x"]),
+            reverse=True,
+        )
+        for cucumber_number, sample in enumerate(samples, start=1):
+            sample["cucumber_number"] = cucumber_number
 
-    return samples, counts
+        return samples, counts
+    finally:
+        iot_controller.set_cabin_light(False)
