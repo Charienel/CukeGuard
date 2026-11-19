@@ -122,7 +122,7 @@ def test_keras_good_with_hsi_good_is_accepted(monkeypatch):
     assert detections[0]["hsi_hue_mean"] == 110.0
 
 
-def test_keras_good_with_hsi_bad_requires_inspection(monkeypatch):
+def test_hsi_bad_overrides_keras_good(monkeypatch):
     monkeypatch.setenv("CUKEGUARD_MODEL_POSITIVE_LABEL", "good")
     monkeypatch.setattr(
         vision_pipeline.model_classifier,
@@ -141,10 +141,10 @@ def test_keras_good_with_hsi_bad_requires_inspection(monkeypatch):
 
     detections = vision_pipeline.detect_and_classify({"image": np.zeros((8, 8, 3), dtype=np.uint8)})
 
-    assert detections[0]["condition"] == "needs_inspection"
+    assert detections[0]["condition"] == "bad"
 
 
-def test_low_confidence_disagreement_requires_inspection(monkeypatch):
+def test_hsi_good_overrides_low_confidence_keras_bad(monkeypatch):
     monkeypatch.setenv("CUKEGUARD_MODEL_POSITIVE_LABEL", "good")
     monkeypatch.setattr(
         vision_pipeline.model_classifier,
@@ -163,10 +163,10 @@ def test_low_confidence_disagreement_requires_inspection(monkeypatch):
 
     detections = vision_pipeline.detect_and_classify({"image": np.zeros((8, 8, 3), dtype=np.uint8)})
 
-    assert detections[0]["condition"] == "needs_inspection"
+    assert detections[0]["condition"] == "good"
 
 
-def test_confident_keras_bad_skips_second_opinion(monkeypatch):
+def test_hsi_good_overrides_confident_keras_bad(monkeypatch):
     monkeypatch.setenv("CUKEGUARD_MODEL_POSITIVE_LABEL", "good")
     monkeypatch.setattr(
         vision_pipeline.model_classifier,
@@ -178,13 +178,15 @@ def test_confident_keras_bad_skips_second_opinion(monkeypatch):
     monkeypatch.setattr(
         vision_pipeline.feature_extraction,
         "classify",
-        lambda image: pytest.fail("HSI/LBP should not run for a confident bad prediction"),
+        lambda image: {
+            "condition": "good", "hsi_hue_mean": 110.0, "lbp_texture_score": 2.0,
+        },
     )
 
     detections = vision_pipeline.detect_and_classify({"image": np.zeros((8, 8, 3), dtype=np.uint8)})
 
-    assert detections[0]["condition"] == "bad"
-    assert detections[0]["hsi_hue_mean"] is None
+    assert detections[0]["condition"] == "good"
+    assert detections[0]["hsi_hue_mean"] == 110.0
 
 
 def test_verified_mapping_requires_an_image_frame(monkeypatch):

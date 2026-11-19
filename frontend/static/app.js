@@ -265,17 +265,16 @@ async function loadLatestScan() {
     latestRenderedScanId = scan.scan_session_id;
 
     document.getElementById("metric-condition").textContent =
-      `${scan.counts.good}/${scan.counts.bad}/${scan.counts.needs_inspection || 0}`;
+      `${scan.counts.good}/${scan.counts.bad}`;
 
     tbody.innerHTML = "";
     scan.samples.forEach(s => {
       const tr = document.createElement("tr");
-      const conditionLabel = s.condition === "needs_inspection" ? "Needs inspection" : s.condition;
       tr.innerHTML = `
         <td>B-${String(s.batch_id).padStart(4, "0")}</td>
         <td>S-${String(s.scan_id).padStart(4, "0")}</td>
         <td>#${s.cucumber_number}</td>
-        <td class="cond-${s.condition}">${conditionLabel}</td>
+        <td class="cond-${s.condition}">${s.condition}</td>
         <td>${s.est_shelf_life_days == null ? "N/A" : s.est_shelf_life_days.toFixed(1)}</td>
         <td>${(s.yolo_confidence * 100).toFixed(1)}%</td>
         <td>${s.hsi_hue_mean == null ? "N/A" : s.hsi_hue_mean.toFixed(1)}</td>
@@ -303,16 +302,11 @@ function renderScanMap(scan) {
   document.getElementById("scan-map-meta").textContent =
     `${scan.samples.length} detected · Scan S-${String(scan.scan_session_id).padStart(4, "0")} · ${scanTime.toLocaleTimeString()}`;
   const badSamples = scan.samples.filter(sample => sample.condition === "bad");
-  const reviewSamples = scan.samples.filter(sample => sample.condition === "needs_inspection");
-  if (!badSamples.length && !reviewSamples.length) {
+  if (!badSamples.length) {
     const item = document.createElement("p");
     item.textContent = scan.samples.length
       ? "No bad cucumbers in the latest scan."
       : "No cucumbers detected in the latest scan.";
-    locationList.appendChild(item);
-  } else if (!badSamples.length) {
-    const item = document.createElement("p");
-    item.textContent = `${reviewSamples.length} cucumber(s) need inspection; no confirmed bad cucumbers.`;
     locationList.appendChild(item);
   }
 
@@ -385,13 +379,12 @@ function renderCucumberShelf(samples, locationList) {
   samples.forEach((sample, index) => {
     const number = Number(sample.cucumber_number);
     const isBad = sample?.condition === "bad";
-    const needsInspection = sample?.condition === "needs_inspection";
     const centerX = shelfPadding + slotWidth * (index + 0.5);
     const cucumber = document.createElementNS(ns, "g");
     cucumber.setAttribute("id", `shelf-cucumber-${sample.sample_id}`);
     cucumber.setAttribute(
       "class",
-      `cartoon-cucumber${isBad ? " cucumber-bad" : needsInspection ? " cucumber-review" : ""}`,
+      `cartoon-cucumber${isBad ? " cucumber-bad" : ""}`,
     );
     cucumber.setAttribute("transform", `translate(${centerX} 0)`);
     cucumber.setAttribute("aria-label", `Cucumber ${number}: ${sample.condition}`);
@@ -414,7 +407,7 @@ function renderCucumberShelf(samples, locationList) {
       <text class="cucumber-number" x="0" y="235" font-size="${Math.max(5, Math.min(13, slotWidth * 0.18))}">#${number}</text>`;
     layer.appendChild(cucumber);
 
-    if (isBad || needsInspection) {
+    if (isBad) {
       const frame = document.createElementNS(ns, "rect");
       frame.setAttribute("id", `scan-box-${sample.sample_id}`);
       frame.setAttribute("x", centerX - scaledSlotWidth / 2 - 3);
@@ -422,23 +415,21 @@ function renderCucumberShelf(samples, locationList) {
       frame.setAttribute("width", scaledSlotWidth + 6);
       frame.setAttribute("height", 156);
       frame.setAttribute("rx", 20);
-      frame.setAttribute("class", `detection-box ${isBad ? "bad" : "review"}`);
+      frame.setAttribute("class", "detection-box bad");
       layer.appendChild(frame);
 
       const label = document.createElementNS(ns, "text");
       label.setAttribute("x", centerX);
       label.setAttribute("y", 35);
-      label.setAttribute("class", `detection-label ${isBad ? "bad" : "review"}`);
+      label.setAttribute("class", "detection-label bad");
       label.setAttribute("font-size", String(Math.max(5, Math.min(14, slotWidth * 0.16))));
-      label.textContent = `#${number} ${isBad ? "BAD" : "REVIEW"}`;
+      label.textContent = `#${number} BAD`;
       layer.appendChild(label);
 
       const item = document.createElement("button");
       item.type = "button";
-      item.className = `bad-location-item${needsInspection ? " review-location-item" : ""}`;
-      item.textContent = needsInspection
-        ? `Inspect cucumber #${number} · model and HSI/LBP disagree`
-        : `Remove cucumber #${number} · ${(sample.yolo_confidence * 100).toFixed(0)}% confidence`;
+      item.className = "bad-location-item";
+      item.textContent = `Remove cucumber #${number} · ${(sample.yolo_confidence * 100).toFixed(0)}% confidence`;
       item.addEventListener("click", () => {
         document.querySelectorAll(".detection-box").forEach(node => node.classList.remove("highlighted"));
         frame.classList.add("highlighted");
@@ -462,8 +453,7 @@ async function loadScanHistory() {
         <td>S-${String(r.id).padStart(4, "0")}</td>
         <td>${r.detected_count}</td>
         <td class="cond-good">${r.good_count}</td>
-        <td class="cond-bad">${r.bad_count}</td>
-        <td class="cond-needs_inspection">${r.needs_inspection_count || 0}</td>`;
+        <td class="cond-bad">${r.bad_count}</td>`;
       tbody.appendChild(tr);
     });
   } catch (e) { console.warn(e); }

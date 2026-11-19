@@ -29,11 +29,11 @@ camera scan, not a look-back through recorded video. To change the interval, set
 The selected candidate is `models/cucumber_condition.keras`. It expects one
 RGB cucumber crop resized to 128×128 and returns two softmax class scores.
 The verification set measured 87.14% accuracy, but the model labeled 35 of
-206 Bad samples as Good. The HSI/LBP rules missed fewer Bad samples but also
-flagged many Good samples, so they are used as a second opinion rather than as
-the primary classifier. These verification images may overlap training data;
-keep alerts simulated until the cascade passes on an independent,
-camera-captured test set. To compare models, install the optional runtime and
+206 Bad samples as Good. HSI/LBP supplies the final Good/Bad condition in
+model mode; Keras confidence is retained as supporting information. These
+verification images may overlap training data; keep alerts simulated until
+the classifier passes on an independent, camera-captured test set. To compare
+models, install the optional runtime and
 place labeled images in `good/` and `bad/`:
 
 ```powershell
@@ -48,11 +48,11 @@ output, and reports overall accuracy plus Good and Bad recall.
 
 After verifying the class mapping, set `CUKEGUARD_MODEL_POSITIVE_LABEL` to
 `good` or `bad` in the server environment. Until then, the scan pipeline
-remains simulated. In model mode, Keras makes the primary prediction. HSI/LBP
-runs when confidence is below 0.8 or Keras predicts Good; matching results keep
-the Keras label, while disagreement is stored as `needs_inspection` and is
-not sent as a Bad-condition alert. The 0.8 threshold is provisional and must
-be tuned using a separate validation set. When the real camera is connected,
+remains simulated. In model mode, HSI/LBP always determines the final
+Good/Bad condition, including when its result differs from Keras. Existing
+records previously marked for inspection are converted using their stored
+HSI/LBP measurements (missing or failing measurements become Bad). When the
+real camera is connected,
 `capture_frame()` must provide its RGB array as the frame's `image` value; each
 frame produces one sample. The classifier does not produce shelf-life
 estimates or object bounding boxes, so those remain unavailable without

@@ -1,10 +1,4 @@
-"""
-vision_pipeline.py — cucumber condition detection pipeline.
-
-Keras makes the primary condition prediction. HSI/LBP provides a second opinion
-for uncertain predictions and model-positive good predictions, with conflicts
-sent for inspection instead of being forced into a good/bad result.
-"""
+"""Cucumber condition detection pipeline with Good/Bad results."""
 import os
 import random
 from typing import Optional
@@ -13,11 +7,10 @@ import numpy as np
 
 from . import feature_extraction, iot_controller, model_classifier
 
-SECOND_OPINION_CONFIDENCE_MIN = 0.8
-# Kept as an alias for callers that used the previous threshold name.
-DETECTION_CONFIDENCE_MIN = SECOND_OPINION_CONFIDENCE_MIN
 TRACK_LENGTH_MM = 600
 STEP_MM = 100
+# Retained for the legacy approach-comparison script.
+DETECTION_CONFIDENCE_MIN = 0.8
 
 
 def home_and_scan_positions():
@@ -32,7 +25,8 @@ def capture_frame(position_mm: float):
 
 def detect_and_classify(frame: dict, object_count: Optional[int] = None):
     """
-    Real classification path: Keras primary prediction + conditional HSI/LBP review.
+    In model mode, HSI/LBP supplies the final Good/Bad condition. Keras
+    confidence is retained as supporting information.
     Returns 0-2 detections per frame with the fields your CucumberSample table expects.
     """
     positive_label = os.getenv("CUKEGUARD_MODEL_POSITIVE_LABEL", "").strip().lower()
@@ -52,20 +46,10 @@ def detect_and_classify(frame: dict, object_count: Optional[int] = None):
             positive_label,
             model_path=os.getenv("CUKEGUARD_MODEL_PATH"),
         )
-        model_condition = prediction["condition"]
-        needs_second_opinion = (
-            prediction["confidence"] < SECOND_OPINION_CONFIDENCE_MIN
-            or model_condition == "good"
+        image_array = np.asarray(
+            image.convert("RGB") if hasattr(image, "convert") else image
         )
-        features = None
-        condition = model_condition
-        if needs_second_opinion:
-            image_array = np.asarray(
-                image.convert("RGB") if hasattr(image, "convert") else image
-            )
-            features = feature_extraction.classify(image_array)
-            if features["condition"] != model_condition:
-                condition = "needs_inspection"
+        features = feature_extraction.classify(image_array)
 
         return [{
             "bbox_x": 0.0,
@@ -73,9 +57,9 @@ def detect_and_classify(frame: dict, object_count: Optional[int] = None):
             "bbox_w": float(prediction["width"]),
             "bbox_h": float(prediction["height"]),
             "yolo_confidence": prediction["confidence"],
-            "hsi_hue_mean": features["hsi_hue_mean"] if features else None,
-            "lbp_texture_score": features["lbp_texture_score"] if features else None,
-            "condition": condition,
+            "hsi_hue_mean": features["hsi_hue_mean"],
+            "lbp_texture_score": features["lbp_texture_score"],
+            "condition": features["condition"],
             "est_shelf_life_days": None,
         }]
 
@@ -111,7 +95,7 @@ def run_scan(batch_id: int, expected_count: Optional[int] = None):
     iot_controller.set_cabin_light(True)
     try:
         samples = []
-        counts = {"good": 0, "bad": 0, "needs_inspection": 0}
+        counts = {"good": 0, "bad": 0}
 
         positions = home_and_scan_positions()
         if expected_count is not None and expected_count > 0:

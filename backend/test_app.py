@@ -19,7 +19,15 @@ from backend.app import (
     _scan_on_climate_excursion,
     app,
 )
-from backend.database import Base, CucumberSample, SessionLocal, engine
+from backend.database import (
+    Base,
+    CucumberSample,
+    ScanSession,
+    SessionLocal,
+    StorageBatch,
+    engine,
+    init_db,
+)
 
 
 @pytest.fixture()
@@ -329,7 +337,7 @@ def test_scan_numbers_cucumbers_right_to_left(monkeypatch):
 
     samples, counts = vision_pipeline.run_scan(batch_id=1)
 
-    assert counts == {"good": 3, "bad": 0, "needs_inspection": 0}
+    assert counts == {"good": 3, "bad": 0}
     assert [sample["cucumber_number"] for sample in samples] == [1, 2, 3]
     assert [(sample["track_position_mm"], sample["bbox_x"]) for sample in samples] == [
         (600, 500), (600, 100), (0, 300)
@@ -348,7 +356,45 @@ def test_scan_uses_batch_expected_quantity(monkeypatch):
     samples, counts = vision_pipeline.run_scan(batch_id=1, expected_count=3)
 
     assert len(samples) == 3
-    assert counts == {"good": 3, "bad": 0, "needs_inspection": 0}
+    assert counts == {"good": 3, "bad": 0}
+
+
+def test_legacy_inspection_samples_migrate_to_good_or_bad(client):
+    db = SessionLocal()
+    batch = StorageBatch(batch_code="MIGRATION-TEST")
+    db.add(batch)
+    db.commit()
+    scan = ScanSession(batch_id=batch.id)
+    db.add(scan)
+    db.commit()
+    samples = [
+        CucumberSample(
+            batch_id=batch.id,
+            scan_id=scan.id,
+            cucumber_number=number,
+            hsi_hue_mean=hue,
+            lbp_texture_score=texture,
+            condition="needs_inspection",
+        )
+        for number, hue, texture in (
+            (1, 105.0, 10.0),
+            (2, 65.0, 10.0),
+            (3, None, None),
+        )
+    ]
+    db.add_all(samples)
+    db.commit()
+    sample_ids = [sample.id for sample in samples]
+    db.close()
+
+    init_db()
+
+    db = SessionLocal()
+    migrated_conditions = [
+        db.get(CucumberSample, sample_id).condition for sample_id in sample_ids
+    ]
+    db.close()
+    assert migrated_conditions == ["good", "bad", "bad"]
 
 
 def test_cabin_light_simulator_tracks_requested_state():
@@ -497,12 +543,12 @@ def test_manual_scan_creates_scan_session(client, monkeypatch):
                 "yolo_confidence": 0.75,
                 "hsi_hue_mean": 108.0,
                 "lbp_texture_score": 12.0,
-                "condition": "needs_inspection",
-                "est_shelf_life_days": None,
+                "condition": "good",
+                "est_shelf_life_days": 14.0,
                 "track_position_mm": 300,
                 "cucumber_number": 3,
             },
-        ], {"good": 1, "bad": 1, "needs_inspection": 1}
+        ], {"good": 2, "bad": 1}
 
     monkeypatch.setattr(vision_pipeline, "run_scan", fixed_scan)
     schedule_resets = []
@@ -520,30 +566,25 @@ def test_manual_scan_creates_scan_session(client, monkeypatch):
     history_response = client.get("/api/scan/history?limit=1")
     assert history_response.status_code == 200
     latest = history_response.json()[0]
-    assert latest["detected_count"] == (
-        latest["good_count"] + latest["bad_count"] + latest["needs_inspection_count"]
-    )
+    assert latest["detected_count"] == latest["good_count"] + latest["bad_count"]
     assert not any(key.endswith("_count") for key in latest if key not in {
-        "detected_count", "good_count", "bad_count", "needs_inspection_count"
+        "detected_count", "good_count", "bad_count"
     })
 
     scan_response = client.get("/api/scan/latest")
     assert scan_response.status_code == 200
     scan = scan_response.json()
-    assert set(scan["counts"]) == {"good", "bad", "needs_inspection"}
+    assert set(scan["counts"]) == {"good", "bad"}
     assert scan["batch_id"] == new_batch["id"]
-    assert all(sample["condition"] in {"good", "bad", "needs_inspection"} for sample in scan["samples"])
+    assert all(sample["condition"] in {"good", "bad"} for sample in scan["samples"])
     assert all("ripeness_class" not in sample for sample in scan["samples"])
     assert all(sample["batch_id"] == scan["batch_id"] for sample in scan["samples"])
     assert all(sample["scan_id"] == scan["scan_session_id"] for sample in scan["samples"])
     assert all(
-        sample["est_shelf_life_days"] is None
-        if sample["condition"] == "needs_inspection"
-        else isinstance(sample["est_shelf_life_days"], float)
+        isinstance(sample["est_shelf_life_days"], float)
         for sample in scan["samples"]
     )
-    assert scan["counts"] == {"good": 1, "bad": 1, "needs_inspection": 1}
-    assert latest["needs_inspection_count"] == 1
+    assert scan["counts"] == {"good": 2, "bad": 1}
     assert [sample["cucumber_number"] for sample in scan["samples"]] == [1, 2, 3]
 
     alert_response = client.get("/api/alerts/history?limit=20")

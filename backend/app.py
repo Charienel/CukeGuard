@@ -563,7 +563,7 @@ def latest_scan(db: Session = Depends(get_db)):
         .order_by(CucumberSample.cucumber_number)
         .all()
     )
-    counts = {"good": 0, "bad": 0, "needs_inspection": 0}
+    counts = {"good": 0, "bad": 0}
     for sample in samples:
         if sample.condition in counts:
             counts[sample.condition] += 1
@@ -602,7 +602,7 @@ def scan_history(limit: int = 20, db: Session = Depends(get_db)):
         .all()
     )
     sample_counts = {
-        row.id: {"good": 0, "bad": 0, "needs_inspection": 0}
+        row.id: {"good": 0, "bad": 0}
         for row in rows
     }
     if sample_counts:
@@ -625,7 +625,6 @@ def scan_history(limit: int = 20, db: Session = Depends(get_db)):
             "detected_count": sum(sample_counts[r.id].values()),
             "good_count": sample_counts[r.id]["good"],
             "bad_count": sample_counts[r.id]["bad"],
-            "needs_inspection_count": sample_counts[r.id]["needs_inspection"],
         }
         for r in rows
     ]

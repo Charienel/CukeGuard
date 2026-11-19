@@ -87,7 +87,7 @@ class CucumberSample(Base):
     yolo_confidence = Column(Float)
     hsi_hue_mean = Column(Float)
     lbp_texture_score = Column(Float)
-    condition = Column(String)             # "good" | "bad" | "needs_inspection"
+    condition = Column(String)             # "good" | "bad"
     est_shelf_life_days = Column(Float)
 
     batch = relationship("StorageBatch", back_populates="samples")
@@ -179,6 +179,13 @@ def init_db():
             "SET batch_id = (SELECT batch_id FROM scan_session "
             "WHERE scan_session.id = cucumber_sample.scan_id) "
             "WHERE batch_id IS NULL"
+        )
+        connection.exec_driver_sql(
+            "UPDATE cucumber_sample "
+            "SET condition = CASE "
+            "WHEN hsi_hue_mean BETWEEN 90 AND 120 "
+            "AND lbp_texture_score < 20 THEN 'good' ELSE 'bad' END "
+            "WHERE condition = 'needs_inspection'"
         )
 
         for table_name, columns in legacy_columns.items():
