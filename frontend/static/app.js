@@ -1,4 +1,5 @@
 const API = "/api";
+const SHELF_CAPACITY = 4;
 let climateChart;
 let latestAlert = null;
 let nextAutomaticScanAt = null;
@@ -299,8 +300,11 @@ function renderScanMap(scan) {
   const locationList = document.getElementById("bad-location-list");
   locationList.replaceChildren();
   const scanTime = parseApiDate(scan.started_at);
+  const mapSummary = scan.samples.length > SHELF_CAPACITY
+    ? `${scan.samples.length} detected · showing first ${SHELF_CAPACITY}`
+    : `${scan.samples.length}/${SHELF_CAPACITY} cucumbers detected`;
   document.getElementById("scan-map-meta").textContent =
-    `${scan.samples.length} detected · Scan S-${String(scan.scan_session_id).padStart(4, "0")} · ${scanTime.toLocaleTimeString()}`;
+    `${mapSummary} · Scan S-${String(scan.scan_session_id).padStart(4, "0")} · ${scanTime.toLocaleTimeString()}`;
   const badSamples = scan.samples.filter(sample => sample.condition === "bad");
   if (!badSamples.length) {
     const item = document.createElement("p");
@@ -318,16 +322,17 @@ function renderCucumberShelf(samples, locationList) {
   const svg = document.getElementById("scan-map-svg");
   const layer = document.getElementById("scan-map-boxes");
   const locations = locationList || document.getElementById("bad-location-list");
+  const shelfSamples = samples.slice(0, SHELF_CAPACITY);
   const mapWidth = 800;
   const shelfPadding = 24;
   const shelfWidth = mapWidth - shelfPadding * 2;
-  const slotWidth = samples.length ? shelfWidth / samples.length : shelfWidth;
+  const slotWidth = shelfWidth / SHELF_CAPACITY;
   const cucumberScale = Math.min(1, slotWidth / 112);
   svg.setAttribute("viewBox", `0 0 ${mapWidth} 270`);
   svg.style.width = "100%";
   svg.setAttribute(
     "aria-label",
-    `Latest scan shelf map showing ${samples.length} cucumber${samples.length === 1 ? "" : "s"}`,
+    `Four-slot shelf map; ${shelfSamples.length} cucumber${shelfSamples.length === 1 ? "" : "s"} detected`,
   );
   layer.replaceChildren();
 
@@ -367,7 +372,7 @@ function renderCucumberShelf(samples, locationList) {
   shelfLegs.setAttribute("d", `M35 216V245 M${mapWidth - 35} 216V245`);
   layer.appendChild(shelfLegs);
 
-  if (samples.length === 0) {
+  if (shelfSamples.length === 0) {
     const emptyLabel = document.createElementNS(ns, "text");
     emptyLabel.setAttribute("class", "map-empty-label");
     emptyLabel.setAttribute("x", String(mapWidth / 2));
@@ -376,18 +381,22 @@ function renderCucumberShelf(samples, locationList) {
     layer.appendChild(emptyLabel);
   }
 
-  samples.forEach((sample, index) => {
-    const number = Number(sample.cucumber_number);
+  Array.from({ length: SHELF_CAPACITY }, (_, index) => {
+    const sample = shelfSamples[index];
+    const number = sample ? Number(sample.cucumber_number) : index + 1;
     const isBad = sample?.condition === "bad";
     const centerX = shelfPadding + slotWidth * (index + 0.5);
     const cucumber = document.createElementNS(ns, "g");
-    cucumber.setAttribute("id", `shelf-cucumber-${sample.sample_id}`);
+    if (sample?.sample_id != null) cucumber.setAttribute("id", `shelf-cucumber-${sample.sample_id}`);
     cucumber.setAttribute(
       "class",
-      `cartoon-cucumber${isBad ? " cucumber-bad" : ""}`,
+      `cartoon-cucumber${sample ? "" : " cucumber-pending"}${isBad ? " cucumber-bad" : ""}`,
     );
     cucumber.setAttribute("transform", `translate(${centerX} 0)`);
-    cucumber.setAttribute("aria-label", `Cucumber ${number}: ${sample.condition}`);
+    cucumber.setAttribute(
+      "aria-label",
+      sample ? `Cucumber ${number}: ${sample.condition}` : `Cucumber slot ${number}: no detection`,
+    );
     const scaledSlotWidth = Math.min(106, slotWidth - 4);
     cucumber.innerHTML = `
       <rect class="shelf-slot" x="${-scaledSlotWidth / 2}" y="55" width="${scaledSlotWidth}" height="149" rx="18"></rect>

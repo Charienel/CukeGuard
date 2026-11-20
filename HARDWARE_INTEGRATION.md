@@ -1,14 +1,15 @@
 # CukeGuard Hardware Integration Guide
 
 This guide maps the planned Raspberry Pi equipment to the current software.
-The app is still in simulation mode. No GPIO pins, stepper HAT driver, or
-electrical ratings are inferred from product names.
+The planned camera is a USB/UVC webcam connected to the Raspberry Pi, not a
+Raspberry Pi Camera Module. The app is still in simulation mode. No GPIO pins,
+stepper HAT driver, or electrical ratings are inferred from product names.
 
 ## Current software hooks
 
 | Hardware | Existing integration point | Work needed |
 |---|---|---|
-| Raspberry Pi Camera Module | `backend/vision_pipeline.py:capture_frame()` | Use the Pi camera library supported by the installed Pi OS (commonly `picamera2`); return an RGB frame and report capture errors. |
+| USB/UVC webcam connected to the Raspberry Pi | `backend/vision_pipeline.py:capture_frame()` | Not integrated yet. Select and test a compatible webcam; implement capture through OpenCV (or its supported Linux video interface), configure the device index/resolution, convert frames to RGB, and report capture errors. |
 | MobileNetV2 `.keras` model | `backend/model_classifier.py:predict_image()` | Use only on one isolated cucumber crop per indexed motor position. Verify class mapping with independent good/bad samples before enabling owner alerts. |
 | NEMA17 + Raspberry Pi Stepper Motor HAT | `backend/vision_pipeline.py:home_and_scan_positions()` | Identify the exact HAT/driver and vendor Python API first. Implement home, bounded movement, speed/current settings, and stop/cleanup using that API. |
 | Two lever limit switches | New motor adapter called from the scan-position hook | Confirm normally-open/closed terminals, voltage compatibility, pull-up/down requirements, polarity, debounce, and fail-safe stop behavior before assigning Pi pins. |
@@ -57,9 +58,10 @@ physical motor driver at once.
 4. Mechanically secure the carriage, keep fingers clear of the belt/pulleys,
    test low-speed homing with an emergency power cut available, and confirm
    both end stops reliably stop motion. Define a timeout and travel bounds.
-5. Test camera focus, lighting, cucumber framing, crop size, and position
-   calibration. Validate the classifier using independent real camera crops,
-   especially bad-condition recall, before sending real alerts.
+5. Connect and test the USB webcam on the Raspberry Pi. Check device access,
+   focus, lighting, cucumber framing, crop size, and position calibration.
+   Validate the classifier using independent webcam crops, especially
+   bad-condition recall, before sending real alerts.
 6. Test the TEC/fans and mister one at a time with measured sensors and a safe
    thermal/moisture setup. Ensure condensation or spray cannot reach the Pi,
    connectors, supplies, or exposed circuits.
@@ -71,8 +73,9 @@ physical motor driver at once.
 The current simulation hooks intentionally remain the defaults. Once the exact
 boards and pin/interface details are known:
 
-- Add a platform-specific motor/camera/sensor adapter behind these existing
-  functions rather than putting GPIO code in the API routes.
+- Add a platform-specific motor/sensor adapter and a USB webcam capture
+  adapter behind these existing functions rather than putting hardware code
+  in the API routes.
 - Select hardware mode explicitly in configuration; fail startup on missing
   settings instead of silently falling back to simulation.
 - Keep GPIO cleanup in `finally`/shutdown handlers. Stop motor outputs on

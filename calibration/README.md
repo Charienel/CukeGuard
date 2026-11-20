@@ -9,6 +9,12 @@ search) is covered by `pytest calibration/` and passes. The hardware calls
 fix pin numbers and small driver details on first contact. Run each script
 with the load disconnected or the chamber empty the first time.
 
+**Camera note:** the planned system uses a USB/UVC webcam connected to the
+Raspberry Pi. Webcam capture and webcam-specific calibration are not implemented
+yet. The current `hw.open_camera()` and `calibrate_camera` code still target
+`picamera2`; do not use them for the planned webcam until that adapter is
+replaced and tested.
+
 ## Setup
 
 Copy the `calibration/` folder into the repo root, then edit the constants at the
@@ -17,7 +23,7 @@ top of `calibration/hw.py` (pins, relay polarity, mux channels, stepper style).
 ```bash
 pip install gpiozero adafruit-circuitpython-sht31d adafruit-circuitpython-tca9548a \
             w1thermsensor adafruit-circuitpython-motorkit numpy opencv-python scikit-image
-# picamera2 comes from apt (sudo apt install python3-picamera2); use a venv with --system-site-packages
+# Only for the legacy Pi-camera calibration code: install picamera2 from apt.
 ```
 Run everything from the repo root as modules, e.g. `python -m calibration.calibrate_sensors ...`.
 
@@ -26,7 +32,7 @@ Run everything from the repo root as modules, e.g. `python -m calibration.calibr
 | # | Script | What it fixes | You need |
 |---|---|---|---|
 | 1 | `calibrate_sensors` | SHT31-D and DS18B20 offset and gain | A trusted reference thermometer/hygrometer; ice water; salt jars for RH |
-| 2 | `calibrate_camera` | Locks white balance, exposure, focus; hue repeatability | Grey card, green reference |
+| 2 | `calibrate_camera` | Legacy Pi-camera calibration only; webcam calibration is pending | Grey card, green reference |
 | 3 | `calibrate_stepper` | Limit switches, steps per mm, slot positions | Ruler along the track |
 | 4 | `calibrate_settle` | Wait time after each move before capturing | Printed text target or a cucumber |
 | 5 | `calibrate_cooling` | Peltier lag, cooling rate, coasting, warm-up | Empty chamber |

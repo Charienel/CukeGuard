@@ -63,7 +63,7 @@
       <div class="panel-heading">
         <div>
           <h2>Live Camera &amp; Cucumber Condition</h2>
-          <p class="panel-subtitle">Local camera preview and a shelf map sized to the latest scan count</p>
+          <p class="panel-subtitle">Local camera preview and a fixed four-cucumber shelf map</p>
         </div>
         <span class="range-chip">Good / Bad</span>
       </div>
@@ -96,7 +96,7 @@
           <div id="bad-location-list" class="bad-location-list" aria-live="polite">
             <p>No scan locations yet.</p>
           </div>
-          <p class="capability-note">The map shows one cartoon for each cucumber reported by the latest scan and refreshes automatically. Demo scan counts and conditions are simulated; real camera counting requires a connected, validated cucumber detector.</p>
+          <p class="capability-note">The shelf has four numbered slots. Detected cucumbers and bad-condition markers update from the latest scan; unused slots stay dimmed. Demo scan results are simulated until the webcam and detector are integrated.</p>
         </div>
       </div>
     </section>
@@ -204,6 +204,6 @@
     </section>
   </main>
 
-  <script src="/static/app.js?v=22"></script>
+  <script src="/static/app.js?v=24"></script>
 </body>
 </html>

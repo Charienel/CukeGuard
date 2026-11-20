@@ -2,8 +2,8 @@
 
 A working FastAPI backend + browser dashboard for the CukeGuard system,
 built to run **right now on a laptop** with simulated sensors/camera, and
-structured so the real Raspberry Pi hardware drops in later with no
-restructuring.
+structured so the Raspberry Pi hardware, including a planned USB webcam,
+drops in later with no restructuring.
 
 ## Run it
 
@@ -52,11 +52,10 @@ remains simulated. In model mode, HSI/LBP always determines the final
 Good/Bad condition, including when its result differs from Keras. Existing
 records previously marked for inspection are converted using their stored
 HSI/LBP measurements (missing or failing measurements become Bad). When the
-real camera is connected,
-`capture_frame()` must provide its RGB array as the frame's `image` value; each
-frame produces one sample. The classifier does not produce shelf-life
-estimates or object bounding boxes, so those remain unavailable without
-separate validated calculations.
+real webcam is integrated, `capture_frame()` must provide its RGB array as the
+frame's `image` value; each frame produces one sample. The classifier does not
+produce shelf-life estimates or object bounding boxes, so those remain
+unavailable without separate validated calculations.
 
 To export the complete database history to a filterable Excel workbook, run
 `python export_database.py`. The timestamped workbook is written to `exports/`.
@@ -96,17 +95,17 @@ readings appear with blank averages and a zero reading count.
 | SHT31-D / DS18B20 readings | **Simulated** in `iot_controller.read_temperature_humidity()` |
 | Peltier / mister control | **Simulated** in `iot_controller.apply_peltier_pwm()` / `set_mister()` |
 | NEMA17 stepper sweep | **Simulated** in `vision_pipeline.home_and_scan_positions()` |
-| Camera capture | **Simulated** in `vision_pipeline.capture_frame()` |
+| Camera capture | **Simulated** in `vision_pipeline.capture_frame()`; a USB/UVC webcam connected to the Raspberry Pi is planned, but not integrated |
 | YOLO detection + HSI/LBP + good/bad condition classification | **Simulated** in `vision_pipeline.detect_and_classify()` |
 | SMS alert to owner on bad detection | **Simulated** (printed to console + logged) in `notifier.send_sms()` |
 
-The dashboard can show a local browser camera preview after camera permission is
-granted. That preview is not uploaded or analyzed. The latest-scan location map
-and bounding boxes come from the simulated vision pipeline until a validated
-camera-connected object detector is installed. The six-cucumber cartoon shelf
-map draws one cartoon per cucumber reported by the latest scan, scales the
-shelf contents to fit without horizontal scrolling, boxes only bad samples,
-and polls for new scans every five seconds. Automatic cooler and
+The planned scan camera is a USB/UVC webcam connected to the Raspberry Pi; it
+is not integrated yet. The dashboard can separately show a local browser camera
+preview after camera permission is granted. That preview is not uploaded or
+analyzed. The latest-scan location map and bounding boxes come from the
+simulated vision pipeline until a validated camera-connected object detector
+is installed. The shelf map has four numbered slots, dims unused slots, boxes
+bad samples, and polls for new scans every five seconds. Automatic cooler and
 mister control, climate alerts, and the daily adjustment log are also simulation-only
 until real sensors and actuators are connected. Temperature below range and
 humidity above range are reported, but this prototype has no heater or
