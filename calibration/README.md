@@ -86,8 +86,10 @@ if t:
   A swapped channel order changes hue completely. Run `calibrate_camera --check-channels`
   with a red object first. If you used the earlier `hardware/camera.py` that did not set a format,
   check it the same way.
-- **Stepper HAT.** `hw.Stepper` assumes an Adafruit-style I2C HAT. For a GPIO STEP/DIR driver,
-  rewrite `step()` and `release()`; nothing else changes. `STEP_STYLE` must match production.
+- **DRV8825 stepper.** `hw.Stepper` uses GPIO STEP/DIR/ENABLE control for a DRV8825.
+  set `PIN_STEPPER_STEP`, `PIN_STEPPER_DIR`, `PIN_STEPPER_ENABLE`, `ENABLE_ACTIVE_LOW`,
+  `DIR_FORWARD_HIGH`, and `STEP_STYLE` in `calibration/hw.py`. The installed DRV8825 adapter
+  deliberately refuses to run until these GPIO pins are assigned.
 - **Reference accuracy.** A calibration cannot be better than its reference. Record the reference
   instrument and its stated accuracy for your thesis.
 - **RH calibration** by salt jars needs hours to equilibrate; wait, then run with `--settle 0`.

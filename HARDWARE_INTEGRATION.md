@@ -11,7 +11,7 @@ stepper HAT driver, or electrical ratings are inferred from product names.
 |---|---|---|
 | USB/UVC webcam connected to the Raspberry Pi | `backend/vision_pipeline.py:capture_frame()` | Not integrated yet. Select and test a compatible webcam; implement capture through OpenCV (or its supported Linux video interface), configure the device index/resolution, convert frames to RGB, and report capture errors. |
 | MobileNetV2 `.keras` model | `backend/model_classifier.py:predict_image()` | Use only on one isolated cucumber crop per indexed motor position. Verify class mapping with independent good/bad samples before enabling owner alerts. |
-| NEMA17 + Raspberry Pi Stepper Motor HAT | `backend/vision_pipeline.py:home_and_scan_positions()` | Identify the exact HAT/driver and vendor Python API first. Implement home, bounded movement, speed/current settings, and stop/cleanup using that API. |
+| NEMA17 + DRV8825 stepper driver | `calibration/hw.py:Stepper` | Assign BCM STEP, DIR and ENABLE pins in `calibration/hw.py`. Calibrate homing, microstep mode, current limit, bounded movement, and stop/cleanup before use in the production scan. |
 | Two lever limit switches | New motor adapter called from the scan-position hook | Confirm normally-open/closed terminals, voltage compatibility, pull-up/down requirements, polarity, debounce, and fail-safe stop behavior before assigning Pi pins. |
 | SHT31-D | `backend/iot_controller.py:read_temperature_humidity()` | Read the device using its supported I2C library. |
 | DS18B20 | `backend/iot_controller.py:read_temperature_humidity()` | Enable and test the Pi's 1-Wire interface; read the probe and handle missing/invalid values explicitly. |

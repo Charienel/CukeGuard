@@ -34,8 +34,19 @@ SHT31_MUX_CHANNELS = []   # [] = SHT31-D directly on the I2C bus; [0, 1] = behin
 SHT31_ADDRESSES = [0x44]  # used only when there is no mux (0x45 if the ADDR pin is pulled high)
 
 # ---------- EDIT: stepper ----------
-STEP_STYLE = "SINGLE"     # must match what the production code uses (SINGLE / DOUBLE / INTERLEAVE / MICROSTEP)
-HOME_IS_BACKWARD = True   # True if moving "backward" drives the carriage toward the home switch
+# Set these to BCM GPIO numbers before running any stepper calibration.
+# The physical GPIO input level may differ from the logical enable state:
+# DRV8825 nENABLE is active-low, so ENABLE_ACTIVE_LOW should normally be True.
+PIN_STEPPER_STEP = None
+PIN_STEPPER_DIR = None
+PIN_STEPPER_ENABLE = None
+PIN_STEPPER_SLEEP = None
+PIN_STEPPER_RESET = None
+
+ENABLE_ACTIVE_LOW = True
+DIR_FORWARD_HIGH = True
+STEP_STYLE = "MICROSTEP_1_16"
+HOME_IS_BACKWARD = True
 
 # ---------- hard safety limits enforced by the scripts ----------
 ABS_MIN_TEMP_C = 8.0      # cooling is cut below this (cucumbers suffer chilling injury near/below 10 C)
@@ -142,40 +153,89 @@ def outputs():
 
 
 class Stepper:
-    """Adapter for the stepper HAT.
-
-    The default implementation assumes an Adafruit-style Stepper HAT (MotorKit,
-    I2C address 0x60). If your HAT is a different make (for example a GPIO
-    STEP/DIR driver), rewrite step() and release() for it. Nothing else changes.
-    """
+    """GPIO STEP/DIR/ENABLE adapter for a DRV8825."""
 
     def __init__(self):
         try:
-            from adafruit_motor import stepper as lib
-            from adafruit_motorkit import MotorKit
+            from gpiozero import DigitalOutputDevice
         except Exception as exc:
-            raise RuntimeError(
-                "Could not load adafruit_motorkit. Implement Stepper in calibration/hw.py "
-                f"for your HAT. Original error: {exc}"
+            raise RuntimeError("gpiozero is not installed on the Raspberry Pi") from exc
+
+        missing = [
+            name
+            for name, pin in (
+                ("PIN_STEPPER_STEP", PIN_STEPPER_STEP),
+                ("PIN_STEPPER_DIR", PIN_STEPPER_DIR),
+                ("PIN_STEPPER_ENABLE", PIN_STEPPER_ENABLE),
             )
-        self._lib = lib
-        self._motor = MotorKit().stepper1
-        self._style = getattr(lib, STEP_STYLE)
+            if pin is None
+        ]
+        if missing:
+            raise RuntimeError(
+                "DRV8825 GPIO pins are not configured. Set "
+                + ", ".join(missing)
+                + " in calibration/hw.py"
+            )
+
+        self._step = DigitalOutputDevice(PIN_STEPPER_STEP, initial_value=False)
+        self._dir = DigitalOutputDevice(PIN_STEPPER_DIR, initial_value=False)
+        self._enable = DigitalOutputDevice(
+            PIN_STEPPER_ENABLE,
+            active_high=not ENABLE_ACTIVE_LOW,
+            initial_value=False,
+        )
+
+        self._sleep = None
+        if PIN_STEPPER_SLEEP is not None:
+            self._sleep = DigitalOutputDevice(PIN_STEPPER_SLEEP, initial_value=False)
+        self._reset = None
+        if PIN_STEPPER_RESET is not None:
+            self._reset = DigitalOutputDevice(PIN_STEPPER_RESET, initial_value=False)
+
+        if self._sleep is not None:
+            self._sleep.on()
+        if self._reset is not None:
+            self._reset.on()
+        self._enable.off()
 
     def step(self, n: int, forward: bool = True, delay_s: float = 0.005, stop_if=None) -> int:
         """Take up to n steps; stop early if stop_if() is true. Returns steps taken."""
-        direction = self._lib.FORWARD if forward else self._lib.BACKWARD
+        if n < 0:
+            raise ValueError("n must be zero or greater")
+        if delay_s < 0:
+            raise ValueError("delay_s must be zero or greater")
+
+        direction_high = forward == DIR_FORWARD_HIGH
+        if direction_high:
+            self._dir.on()
+        else:
+            self._dir.off()
+        self.enable()
+
         taken = 0
         for _ in range(n):
             if stop_if is not None and stop_if():
                 break
-            self._motor.onestep(direction=direction, style=self._style)
+            self._step.on()
+            time.sleep(max(delay_s / 2.0, 0.000002))
+            self._step.off()
+            time.sleep(max(delay_s / 2.0, 0.000002))
             taken += 1
-            time.sleep(delay_s)
         return taken
 
+    def enable(self) -> None:
+        self._enable.on()
+
     def release(self) -> None:
-        self._motor.release()
+        self._enable.off()
+        if self._sleep is not None:
+            self._sleep.off()
+        for device in (self._enable, self._dir, self._step):
+            device.close()
+        if self._sleep is not None:
+            self._sleep.close()
+        if self._reset is not None:
+            self._reset.close()
 
 
 class Limits:
