@@ -19,8 +19,8 @@ limiting must still be verified from the board manufacturer's documentation.
 | SHT41 x3 | `backend/iot_controller.py:read_temperature_humidity()` | Hardware read is implemented through TCA9548A channels 0-2 at address 0x70; sensor calibration remains required. |
 | DS18B20 | `backend/iot_controller.py:read_temperature_humidity()` | Enable and test the Pi's 1-Wire interface; read the probe and handle missing/invalid values explicitly. |
 | TCA9548A | Sensor initialization | Address 0x70, reset GPIO24, SHT41 on channels 0-2 are configured. |
-| TEC1-12706, heatsink/fans | `backend/iot_controller.py:apply_peltier_pwm()` | The PDF provides no Peltier PWM/fan pin or relay-to-load map, so cooling is intentionally unavailable. Do not expect automatic temperature cooling until this is resolved. |
-| Mist board button circuit | `backend/iot_controller.py:set_mister()` | GPIO21, 1 kΩ series base resistor, 0.5 s press; button behavior and pulse count need live testing. |
+| TEC1-12706, heatsink/fans | Continuously powered (user-confirmed) | The cooler is not monitored or switched by software. Watch temperature and switch it off at its power source if it falls below 10°C. |
+| Mist board button circuit | `backend/iot_controller.py:press_mister_button()` | GPIO21 (physical pin 40), GND physical pin 39, 1 kΩ series base resistor. The board button toggles; software sends one 0.5 s press only when the desired state changes. |
 | 12V/24V supplies + 5V buck | Power design, not Python | Check each device's voltage/current requirements, common-ground/isolation requirements, supply headroom, fusing, and wire gauge against its datasheet. |
 | Cabin LED strip | `backend/iot_controller.py:set_cabin_light()` called by `backend/vision_pipeline.py:run_scan()` | GPIO18 WS2812B data with 330 Ω series resistor. Requires `rpi_ws281x` and root; not active until tested. |
 | SIM800L EVB | `backend/notifier.py:send_sms()` | UART uses Pi GPIO15/RXD (physical pin 10) and GPIO14/TXD (physical pin 8), default `/dev/serial0` at 9600 baud. Confirm EVB UART logic levels, enable the Pi UART, use an active SIM/antenna, and provide adequate power at EVB 5VIN. |
@@ -64,8 +64,12 @@ may need adjustment to match the actual track orientation.
 
    Set `CUKEGUARD_OWNER_PHONE` to the recipient in international format,
    `CUKEGUARD_SMS_PROVIDER=sim800l`, and
-   `CUKEGUARD_SIM800L_PORT=/dev/serial0` in `.env`. The local `.env` is ignored
-   by Git; do not commit it.
+   `CUKEGUARD_SIM800L_PORT=/dev/serial0` in `.env`. Before first startup,
+   inspect the physical mister's state and set
+   `CUKEGUARD_MISTER_INITIAL_STATE=on` or `off` to match. The board has no
+   feedback to discover its state automatically. Repeat this check if the
+   mister board is power-cycled independently. The local `.env` is ignored by
+   Git; do not commit it.
 4. **Wire and verify low-voltage signals.** Follow the GPIO pin table above.
    The SIM800L TXD goes to Pi GPIO15/RXD (physical pin 10); modem RXD goes to
    Pi GPIO14/TXD (physical pin 8); UART GND is common. Power the EVB at its
@@ -115,8 +119,11 @@ may need adjustment to match the actual track orientation.
    ```
 
    Open `http://<raspberry-pi-ip>:8000`. Fresh climate readings should appear
-   every five seconds. If the dashboard says sensor data is stale, check the
-   backend log and sensor wiring; old database rows are not live readings.
+   every five seconds. The Peltier remains powered independently of the app:
+   compare live readings with the 10°C lower limit and switch it off at its
+   power source if the chamber gets too cold. If the dashboard says sensor data
+   is stale, check the backend log and sensor wiring; old database rows are not
+   live readings.
 9. **Supervise a first scan.** With the carriage secured and emergency power
    cut-off within reach, click **Run Scan** once. Confirm light, homing,
    four captures/results, and return movement before leaving it unattended.
@@ -124,11 +131,11 @@ may need adjustment to match the actual track orientation.
    coverage, SMS service/credit, and a working SIM800L; `submitted` means the
    modem accepted the command, not that the recipient confirmed receipt.
 
-**Cooling is not integrated:** the PDF does not identify Peltier/fan control
-pins or map the 4-relay outputs to loads. The software marks the cooler
-unavailable and will not drive it. Do not run unattended climate control or
-expect the system to cool until the driver/control wiring is identified and
-reviewed against the hardware datasheets.
+**Cooling is not software-controlled:** the Peltier is continuously powered,
+but CukeGuard cannot verify or switch it. It can drive the chamber below 10°C;
+watch sensor readings and switch it off at its power source if needed. Do not
+leave the system unattended unless an independent thermostat or safety cutoff
+prevents overcooling.
 
 Do not power the assembled system until electrical connections, polarity,
 logic levels, fusing, current limits, and load-driver ratings have been checked

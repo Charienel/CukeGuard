@@ -128,8 +128,8 @@ async function loadLatestSensor() {
       document.getElementById("metric-humidity").textContent = "--%";
       document.getElementById("correction-log").textContent =
         "Waiting for a fresh reading from the Raspberry Pi sensors.";
-      updateActuatorCard("cooler-state", false, "Unavailable · control pin not assigned", true);
-      updateActuatorCard("humidifier-state", false, "Unknown · sensor data is stale", true);
+      updateActuatorCard("cooler-state", false, "Always powered · no feedback", true);
+      updateActuatorCard("humidifier-state", false, "No fresh sensor data · state unverified", true);
       banner.classList.remove("correcting", "alert");
       banner.classList.add("limited");
       text.textContent = `No live sensor data · last reading ${lastReading.toLocaleString()}`;
@@ -144,16 +144,17 @@ async function loadLatestSensor() {
       : "Both readings are within the target ranges.";
     updateActuatorCard(
       "cooler-state",
-      r.cooler_available && r.cooler_active,
-      !r.cooler_available
-        ? "Unavailable · control pin not assigned"
-        : r.cooler_active ? `ACTIVE · ${r.peltier_pwm_pct.toFixed(0)}%` : "Standby",
-      !r.cooler_available,
+      false,
+      "Always powered · not software-controlled",
+      true,
     );
     updateActuatorCard(
       "humidifier-state",
       r.humidifier_active,
-      r.humidifier_active ? "BOOSTED · MIST ON" : "Standby",
+      r.humidifier_active === null
+        ? "STATE UNKNOWN · verify physical mister"
+        : r.humidifier_active ? "MIST ON · last command" : "MIST OFF · last command",
+      !r.humidifier_feedback_available,
     );
 
     banner.classList.remove("correcting", "alert", "limited");
@@ -161,7 +162,7 @@ async function loadLatestSensor() {
       text.textContent = `Climate in range · ${r.temperature_c.toFixed(1)}°C / ${r.humidity_pct.toFixed(1)}% RH`;
     } else if (r.control_status === "needs_hardware") {
       banner.classList.add("limited");
-      text.textContent = `Outside target; required correction hardware is unavailable. ${r.correction_note}`;
+      text.textContent = `Outside target; software correction is limited. ${r.correction_note}`;
     } else if (r.control_status === "partial") {
       banner.classList.add("limited", "correcting");
       text.textContent = `Some correction is active; additional hardware is required. ${r.correction_note}`;

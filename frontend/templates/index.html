@@ -112,7 +112,7 @@
       <canvas id="climate-chart" height="90"></canvas>
       <p class="capability-note" id="climate-history-empty" hidden>No sensor readings were recorded in the last 24 hours.</p>
       <p class="log-line" id="correction-log">Waiting for the first sensor reading.</p>
-      <p class="capability-note" id="capability-note">Mist control is configured. The Peltier and heatsink fan control pin is not yet assigned.</p>
+      <p class="capability-note" id="capability-note">CukeGuard controls humidity through the GPIO21 mist-board button. The Peltier is always powered and is not monitored or switched by software.</p>
     </section>
 
     <section class="panel schedule-panel">
@@ -140,12 +140,12 @@
         <div class="actuator-card">
           <span class="detail-label">Cooler</span>
           <strong id="cooler-state" class="actuator-state">Waiting for sensor reading</strong>
-          <small id="cooler-detail">Temperature target 10–12.5°C</small>
+          <small id="cooler-detail">Always powered · switch off manually if temperature drops below target</small>
         </div>
         <div class="actuator-card">
           <span class="detail-label">Humidifier</span>
           <strong id="humidifier-state" class="actuator-state">Waiting for sensor reading</strong>
-          <small id="humidifier-detail">Humidity target 90–95% RH</small>
+          <small id="humidifier-detail">Toggle button via GPIO21 · state not sensed</small>
         </div>
         <div class="actuator-card adjustment-count">
           <span class="detail-label">Adjustments today</span>
@@ -161,7 +161,7 @@
           <tbody><tr><td colspan="5">Waiting for adjustment history…</td></tr></tbody>
         </table>
       </div>
-      <p class="capability-note">The controller turns cooling on above the temperature band and misting on below the humidity band. Heating and dehumidification are not installed; those out-of-range conditions are reported but cannot be corrected by this prototype.</p>
+      <p class="capability-note">CukeGuard toggles the mister on below 90% RH and off at or above 90%; the displayed mister state is the last command, not hardware feedback. The Peltier is always powered and must be switched off manually if temperature drops below target. No heater or dehumidifier is installed.</p>
     </section>
 
     <section class="panel alerts-panel">

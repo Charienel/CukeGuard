@@ -2,6 +2,7 @@
 import os
 import time
 from datetime import datetime
+from typing import Optional
 
 from .database import SessionLocal, SensorReading, StorageBatch
 
@@ -13,9 +14,10 @@ if DATA_MODE != "hardware":
 
 _actuator_state = {
     "peltier_pwm": 0.0,
-    "mister": False,
+    "mister": None,
     "cabin_light": False,
 }
+_mister_state_initialized = False
 
 
 def read_temperature_humidity():
@@ -39,20 +41,36 @@ def apply_peltier_pwm(pwm_pct: float):
     )
 
 
-def set_mister(active: bool):
-    """Press the mist-board button on GPIO21."""
-    if active:
-        from gpiozero import DigitalOutputDevice
-        mist = DigitalOutputDevice(21, initial_value=False)
-        try:
-            mist.on()
-            time.sleep(0.5)
-            mist.off()
-        finally:
-            mist.close()
-        _actuator_state["mister"] = True
-    else:
-        _actuator_state["mister"] = False
+def press_mister_button():
+    """Generate one 0.5-second press on the mist-board toggle button."""
+    from gpiozero import DigitalOutputDevice
+    mist = DigitalOutputDevice(21, initial_value=False)
+    try:
+        mist.on()
+        time.sleep(0.5)
+        mist.off()
+    finally:
+        mist.close()
+
+
+def _initialize_mister_state() -> Optional[bool]:
+    """Use the operator-verified physical toggle state at app startup."""
+    global _mister_state_initialized
+    if _mister_state_initialized:
+        return bool(_actuator_state["mister"])
+
+    initial = os.getenv("CUKEGUARD_MISTER_INITIAL_STATE", "").strip().lower()
+    if not initial:
+        return None
+    if initial not in {"on", "off"}:
+        raise RuntimeError(
+            "Inspect the mister board and set CUKEGUARD_MISTER_INITIAL_STATE to 'on' or 'off'"
+        )
+    state = initial == "on"
+
+    _actuator_state["mister"] = state
+    _mister_state_initialized = True
+    return state
 
 
 def set_cabin_light(active: bool):
@@ -79,19 +97,20 @@ def set_cabin_light(active: bool):
 
 
 def plan_corrections(temp: float, humidity: float) -> tuple[float, bool, list[str]]:
-    """Plan actions using the installed cooling and misting capabilities."""
+    """Control the mister and report temperature conditions for a manual cooler."""
     temp_min, temp_max = TARGET_TEMP_RANGE
     humidity_min, humidity_max = TARGET_HUMIDITY_RANGE
     notes = []
 
     peltier_pwm = 0.0
     if temp > temp_max:
-        peltier_pwm = min(100.0, (temp - temp_max) * 40)
         notes.append(
-            f"Temperature high; cooler activated (cooling at {peltier_pwm:.0f}%)"
+            "Temperature high; cooler is continuously powered but is not controlled or monitored by software"
         )
     elif temp < temp_min:
-        notes.append("Temperature low; heating hardware required")
+        notes.append(
+            "Temperature low; switch off the continuously powered cooler manually"
+        )
 
     mister_active = humidity < humidity_min
     if mister_active:
@@ -105,14 +124,17 @@ def plan_corrections(temp: float, humidity: float) -> tuple[float, bool, list[st
 def control_tick(batch: StorageBatch, db: SessionLocal) -> SensorReading:
     """One iteration of the closed-loop controller. Called on a timer."""
     temp, humidity = read_temperature_humidity()
-    pwm, mister_active, note_parts = plan_corrections(temp, humidity)
-    if DATA_MODE == "hardware":
-        if pwm > 0:
-            note_parts.append("Peltier PWM is not configured by the wiring PDF")
-            pwm = 0.0
-    else:
-        apply_peltier_pwm(pwm)
-    set_mister(mister_active)
+    _, mister_desired, note_parts = plan_corrections(temp, humidity)
+    mister_state = _initialize_mister_state()
+    if mister_state is None:
+        note_parts.append(
+            "Mister state unknown; automatic toggling is inhibited until CUKEGUARD_MISTER_INITIAL_STATE is verified"
+        )
+    elif mister_desired != mister_state:
+        press_mister_button()
+        _actuator_state["mister"] = mister_desired
+        if not mister_desired:
+            note_parts.append("Humidity reached target; mister toggled off")
 
     reading = SensorReading(
         batch_id=batch.id,
@@ -120,7 +142,11 @@ def control_tick(batch: StorageBatch, db: SessionLocal) -> SensorReading:
         temperature_c=temp,
         humidity_pct=humidity,
         peltier_pwm_pct=_actuator_state["peltier_pwm"],
-        mister_active=int(_actuator_state["mister"]),
+        mister_active=(
+            int(_actuator_state["mister"])
+            if _actuator_state["mister"] is not None
+            else None
+        ),
         correction_note="; ".join(note_parts) if note_parts else None,
     )
     db.add(reading)

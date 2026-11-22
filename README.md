@@ -85,8 +85,8 @@ readings appear with blank averages and a zero reading count.
 | SQLite DB + SQLAlchemy models (matches your ERD) | Real |
 | Dashboard (live metric cards, 24h chart, scan table, manual scan button) | Real |
 | SHT41 x3 / DS18B20 readings | Hardware adapter implemented; verify wiring and calibrate on the Pi |
-| Peltier / heatsink control | Not configured; the wiring PDF does not map relay loads or give a Peltier control pin |
-| Mist board control | GPIO21 0.5-second button press; validate behavior and pulse timing on the rig |
+| Peltier / heatsink | Always powered (user-confirmed); not monitored or switched by software |
+| Mist board control | GPIO21 (physical pin 40), GND physical pin 39; toggle button receives one 0.5-second press when desired state changes |
 | NEMA17 + DRV8825 | GPIO17 STEP, GPIO27 DIR, GPIO22 ENABLE; calibrate and verify homing/travel before scans |
 | Camera capture | USB/UVC `/dev/video0` adapter; verify framing and focus on the Pi |
 | Condition classification | HSI/LBP from each captured frame; optional Keras model needs verified class mapping |
@@ -95,9 +95,16 @@ readings appear with blank averages and a zero reading count.
 The scan uses a USB/UVC webcam on the Pi and four fixed cucumber positions
 spaced 63.5 mm apart. A separate browser camera preview is optional and is not
 the camera used for scanning. Live climate readings require the Pi sensors and
-are marked stale when no recent reading is received. The cooler cannot operate
-until its Peltier/fan control wiring is identified; there is no heater or
-dehumidifier installed.
+are marked stale when no recent reading is received. The Peltier is always
+powered but has no feedback and cannot be switched off by software. If
+temperature drops below 10°C, switch the cooler off at its power source. The
+system has no heater or dehumidifier; do not leave it unattended unless an
+independent thermostat or safety cutoff prevents overcooling.
+
+Because the mist board provides no state feedback, inspect its actual state
+before starting the controller and set `CUKEGUARD_MISTER_INITIAL_STATE=on` or
+`off` in the ignored local `.env` to match. Leave it unset until verified;
+repeat the check if the mist board is powered off or toggled independently.
 
 The Owner Alerts section sends to the number configured in the local `.env`
 file as `CUKEGUARD_OWNER_PHONE`. The `.env` file is ignored by Git and should
@@ -114,8 +121,9 @@ for the Pi's 3.3 V UART.
 ### Hardware integration guide
 
 See [HARDWARE_INTEGRATION.md](./HARDWARE_INTEGRATION.md) for the verified GPIO
-assignments and step-by-step Raspberry Pi setup. Peltier/fan output remains
-blocked until its wiring and relay/load mapping are confirmed.
+assignments and step-by-step Raspberry Pi setup. Peltier/fan software control
+remains blocked because no control output is assigned; the Peltier stays powered
+independently of CukeGuard.
 
 ## How the alert flow works
 

@@ -87,29 +87,30 @@ def _climate_alert_details(reading, previous_conditions=()):
         messages.append(
             f"Temperature is {state} at {reading.temperature_c:.1f}°C "
             f"(target {temp_min:.1f}–{temp_max:.1f}°C); "
-            + (
-                f"cooler activated at {reading.peltier_pwm_pct:.0f}%."
-                if reading.peltier_pwm_pct > 0
-                else "cooler is on standby."
-            )
+            "cooler is continuously powered but is not monitored or controlled by software."
         )
     if "temperature_low" in active:
         state = "low" if reading.temperature_c < temp_min else "recovering"
         messages.append(
             f"Temperature is {state} at {reading.temperature_c:.1f}°C "
             f"(target {temp_min:.1f}–{temp_max:.1f}°C); "
-            "heating hardware is not configured."
+            "switch off the continuously powered cooler manually."
         )
     if "humidity_low" in active:
         state = "low" if reading.humidity_pct < humidity_min else "recovering"
+        mister_status = (
+            "mister's physical state is unknown; automatic misting is inhibited until configured."
+            if reading.mister_active is None
+            else (
+                "mister's last commanded state is ON (not sensed)."
+                if reading.mister_active
+                else "mister's last commanded state is OFF (not sensed)."
+            )
+        )
         messages.append(
             f"Humidity is {state} at {reading.humidity_pct:.1f}% RH "
             f"(target {humidity_min:.1f}–{humidity_max:.1f}%); "
-            + (
-                "humidifier boosted (mister activated)."
-                if reading.mister_active
-                else "humidifier is on standby."
-            )
+            + mister_status
         )
     if "humidity_high" in active:
         state = "high" if reading.humidity_pct > humidity_max else "recovering"
@@ -314,7 +315,7 @@ def system_status():
             "stepper": "configured_not_calibrated",
             "limit_switches": "configured_not_confirmed",
             "cabin_light": "configured_not_tested",
-            "actuators": "partial",
+            "actuators": "mister_controlled_cooler_continuous_unmonitored",
             "sms": notifier.sms_mode(),
         },
         "hardware_integration": [
@@ -345,13 +346,13 @@ def system_status():
             },
             {
                 "name": "TEC + heatsink fans",
-                "detail": "No PWM/fan GPIO assignment is stated by the wiring PDF; relay load mapping is also unresolved.",
-                "status": "not_configured",
+                "detail": "Continuously powered by the current setup; software cannot switch it off or verify its state.",
+                "status": "continuous_unmonitored",
             },
             {
                 "name": "Mist board",
-                "detail": "GPIO21 transistor button circuit, 1 kΩ series resistor, 0.5 s press.",
-                "status": "configured_not_calibrated",
+                "detail": "GPIO21 transistor drives a toggle button for 0.5 s; initial physical state must be verified by the operator.",
+                "status": "configured_requires_state_check",
             },
             {
                 "name": "Cabin LED strip",
@@ -376,8 +377,8 @@ def system_status():
             "dehumidification": False,
         },
         "automation": {
-            "cooler": "not configured: Peltier PWM/fan pin unresolved",
-            "humidifier": "GPIO21 mist-board button control",
+            "cooler": "continuously powered; not monitored or controlled by software",
+            "humidifier": "GPIO21 toggle-button control below 90% RH; requires operator-verified initial state; commanded state only",
         },
     }
 
@@ -470,6 +471,10 @@ def latest_reading(db: Session = Depends(get_db)):
         reading.temperature_c < temp_min
         or reading.temperature_c > temp_max
         or reading.humidity_pct > humidity_max
+        or (
+            reading.humidity_pct < humidity_min
+            and reading.mister_active is None
+        )
     )
     if not outside_range:
         control_status = "stable"
@@ -487,14 +492,25 @@ def latest_reading(db: Session = Depends(get_db)):
         "temperature_c": reading.temperature_c,
         "humidity_pct": reading.humidity_pct,
         "peltier_pwm_pct": reading.peltier_pwm_pct,
-        "mister_active": bool(reading.mister_active),
+        "mister_active": (
+            bool(reading.mister_active)
+            if reading.mister_active is not None
+            else None
+        ),
         "correction_note": reading.correction_note,
         "is_correcting": is_correcting,
         "requires_hardware": requires_hardware,
         "control_status": control_status,
         "cooler_available": cooler_available,
         "cooler_active": cooler_available and reading.peltier_pwm_pct > 0,
-        "humidifier_active": bool(reading.mister_active),
+        "cooler_power_mode": "continuous_unverified",
+        "cooler_display": "Always powered by setup; no software feedback",
+        "humidifier_active": (
+            bool(reading.mister_active)
+            if reading.mister_active is not None
+            else None
+        ),
+        "humidifier_feedback_available": False,
     }
 
 

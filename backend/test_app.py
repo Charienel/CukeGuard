@@ -44,7 +44,7 @@ def test_health_endpoint(client):
     assert response.json()["status"] == "ok"
 
 
-def test_stale_sensor_readings_are_flagged_and_cooler_is_unavailable(client):
+def test_stale_sensor_readings_are_flagged_and_cooler_is_unmonitored(client):
     db = SessionLocal()
     db.add(
         SensorReading(
@@ -65,6 +65,7 @@ def test_stale_sensor_readings_are_flagged_and_cooler_is_unavailable(client):
     assert data["is_stale"] is True
     assert data["cooler_available"] is False
     assert data["cooler_active"] is False
+    assert data["cooler_power_mode"] == "continuous_unverified"
     assert data["is_correcting"] is False
     assert data["control_status"] == "needs_hardware"
 
@@ -132,23 +133,23 @@ def test_hardware_integration_guide_is_served(client):
     assert "directly to Pi GPIO" in response.text
 
 
-def test_controller_reports_missing_heating_and_dehumidification():
+def test_controller_reports_manual_cooler_and_missing_dehumidification():
     pwm, mister, notes = iot_controller.plan_corrections(9.0, 97.0)
     assert pwm == 0
     assert mister is False
-    assert any("heating hardware required" in note for note in notes)
+    assert any("switch off the continuously powered cooler manually" in note for note in notes)
     assert any("dehumidification hardware required" in note for note in notes)
 
 
-def test_controller_corrects_high_temperature_and_low_humidity():
+def test_controller_only_requests_mister_and_reports_continuous_cooler():
     pwm, mister, notes = iot_controller.plan_corrections(14.0, 85.0)
-    assert pwm > 0
+    assert pwm == 0
     assert mister is True
-    assert any("cooling" in note for note in notes)
+    assert any("continuously powered" in note for note in notes)
     assert any("mister on" in note for note in notes)
 
 
-def test_climate_alert_describes_active_cooler_and_humidifier():
+def test_climate_alert_describes_continuous_cooler_and_humidifier():
     reading = SimpleNamespace(
         temperature_c=14.0,
         humidity_pct=85.0,
@@ -159,8 +160,8 @@ def test_climate_alert_describes_active_cooler_and_humidifier():
     conditions, message = _climate_alert_details(reading)
 
     assert conditions == ("temperature_high", "humidity_low")
-    assert "cooler activated at 60%" in message
-    assert "humidifier boosted (mister activated)" in message
+    assert "continuously powered" in message
+    assert "mister's last commanded state is ON (not sensed)" in message
 
 
 def test_climate_alert_waits_for_hysteresis_before_recovery():
@@ -187,6 +188,64 @@ def test_climate_alert_waits_for_hysteresis_before_recovery():
     assert active_conditions == ("temperature_high", "humidity_low")
     assert "recovering" in message
     assert clear_conditions == ()
+
+
+def test_toggle_mister_only_presses_when_humidity_target_state_changes(client, monkeypatch):
+    readings = iter([(11.5, 89.0), (11.5, 88.0), (11.5, 90.0)])
+    button_presses = []
+    monkeypatch.setenv("CUKEGUARD_MISTER_INITIAL_STATE", "off")
+    monkeypatch.setattr(iot_controller, "_mister_state_initialized", False)
+    monkeypatch.setitem(iot_controller._actuator_state, "mister", None)
+    monkeypatch.setattr(
+        iot_controller,
+        "read_temperature_humidity",
+        lambda: next(readings),
+    )
+    monkeypatch.setattr(
+        iot_controller,
+        "press_mister_button",
+        lambda: button_presses.append("press"),
+    )
+
+    db = SessionLocal()
+    batch = db.query(StorageBatch).first()
+    states = [
+        iot_controller.control_tick(batch, db).mister_active
+        for _ in range(3)
+    ]
+    db.close()
+
+    assert states == [1, 1, 0]
+    assert button_presses == ["press", "press"]
+
+
+def test_unknown_mister_state_preserves_sensor_reading_without_toggling(client, monkeypatch):
+    button_presses = []
+    monkeypatch.delenv("CUKEGUARD_MISTER_INITIAL_STATE", raising=False)
+    monkeypatch.setattr(iot_controller, "_mister_state_initialized", False)
+    monkeypatch.setitem(iot_controller._actuator_state, "mister", None)
+    monkeypatch.setattr(
+        iot_controller,
+        "read_temperature_humidity",
+        lambda: (11.5, 85.0),
+    )
+    monkeypatch.setattr(
+        iot_controller,
+        "press_mister_button",
+        lambda: button_presses.append("press"),
+    )
+
+    db = SessionLocal()
+    batch = db.query(StorageBatch).filter(StorageBatch.ended_at.is_(None)).first()
+    reading = iot_controller.control_tick(batch, db)
+    db.close()
+    response = client.get("/api/sensors/latest")
+
+    assert reading.mister_active is None
+    assert "automatic toggling is inhibited" in reading.correction_note
+    assert button_presses == []
+    assert response.json()["humidifier_active"] is None
+    assert response.json()["control_status"] == "needs_hardware"
 
 
 def test_climate_notifications_are_deduplicated_until_recovery(monkeypatch):
