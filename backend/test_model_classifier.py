@@ -196,8 +196,7 @@ def test_verified_mapping_requires_an_image_frame(monkeypatch):
         vision_pipeline.detect_and_classify({"position_mm": 200})
 
 
-def test_unverified_mapping_keeps_the_demo_path(monkeypatch):
+def test_unverified_mapping_requires_a_real_frame(monkeypatch):
     monkeypatch.delenv("CUKEGUARD_MODEL_POSITIVE_LABEL", raising=False)
-    monkeypatch.setattr(vision_pipeline.random, "choices", lambda *args, **kwargs: [0])
-
-    assert vision_pipeline.detect_and_classify({"position_mm": 200}) == []
+    with pytest.raises(RuntimeError, match="did not provide an RGB image"):
+        vision_pipeline.detect_and_classify({"position_mm": 200})

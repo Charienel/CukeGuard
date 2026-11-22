@@ -1,22 +1,14 @@
 # CukeGuard — Software Prototype
 
-A working FastAPI backend + browser dashboard for the CukeGuard system,
-built to run **right now on a laptop** with simulated sensors/camera, and
-structured so the Raspberry Pi hardware, including a planned USB webcam,
-drops in later with no restructuring.
+A FastAPI backend and dashboard configured for the CukeGuard Raspberry Pi
+hardware. Hardware-specific dependencies and live I/O require a Raspberry Pi;
+the Windows development environment cannot read the sensors or drive actuators.
 
 ## Run it
 
-```bash
-python -m pip install -r requirements.txt
-copy .env.example .env
-# Set CUKEGUARD_OWNER_PHONE in .env to the owner's number in international format.
-python -m uvicorn backend.app:app --host 0.0.0.0 --port 8000 --reload
-```
-
-Then open `http://localhost:8000` (or `http://<pi-ip>:8000` from another
-device on the same network — this is what makes it work for both the local
-touchscreen in kiosk mode and remote browser access).
+Follow [HARDWARE_INTEGRATION.md](./HARDWARE_INTEGRATION.md) for the Raspberry Pi
+setup, wiring checks, calibration, and service startup sequence. The dashboard
+is available at `http://<raspberry-pi-ip>:8000` after the service starts.
 
 Automatic camera scans default to every 3 hours. A manual scan restarts
 that countdown. A newly detected temperature or humidity excursion triggers
@@ -31,8 +23,8 @@ RGB cucumber crop resized to 128×128 and returns two softmax class scores.
 The verification set measured 87.14% accuracy, but the model labeled 35 of
 206 Bad samples as Good. HSI/LBP supplies the final Good/Bad condition in
 model mode; Keras confidence is retained as supporting information. These
-verification images may overlap training data; keep alerts simulated until
-the classifier passes on an independent, camera-captured test set. To compare
+verification images may overlap training data; validate on independent,
+camera-captured samples before relying on alerts. To compare
 models, install the optional runtime and
 place labeled images in `good/` and `bad/`:
 
@@ -47,13 +39,13 @@ The verifier handles each model's own input dimensions and sigmoid/softmax
 output, and reports overall accuracy plus Good and Bad recall.
 
 After verifying the class mapping, set `CUKEGUARD_MODEL_POSITIVE_LABEL` to
-`good` or `bad` in the server environment. Until then, the scan pipeline
-remains simulated. In model mode, HSI/LBP always determines the final
+`good` or `bad` in the server environment. Without this setting, the webcam
+scan still computes its Good/Bad result using HSI/LBP. In model mode, HSI/LBP determines the final
 Good/Bad condition, including when its result differs from Keras. Existing
 records previously marked for inspection are converted using their stored
-HSI/LBP measurements (missing or failing measurements become Bad). When the
-real webcam is integrated, `capture_frame()` must provide its RGB array as the
-frame's `image` value; each frame produces one sample. The classifier does not
+HSI/LBP measurements (missing or failing measurements become Bad). The USB
+webcam adapter provides RGB frames to `capture_frame()`; each fixed cucumber
+position produces one sample. The classifier does not
 produce shelf-life estimates or object bounding boxes, so those remain
 unavailable without separate validated calculations.
 
@@ -85,47 +77,45 @@ each batch; those values are shared batch-sensor measurements, not readings
 from sensors attached to individual cucumbers. Missing hours between recorded
 readings appear with blank averages and a zero reading count.
 
-## What's real vs. simulated right now
+## Hardware integration status
 
 | Piece | Status |
 |---|---|
 | FastAPI app, routing, background loops | Real |
 | SQLite DB + SQLAlchemy models (matches your ERD) | Real |
 | Dashboard (live metric cards, 24h chart, scan table, manual scan button) | Real |
-| SHT31-D / DS18B20 readings | **Simulated** in `iot_controller.read_temperature_humidity()` |
-| Peltier / mister control | **Simulated** in `iot_controller.apply_peltier_pwm()` / `set_mister()` |
-| NEMA17 stepper sweep | **Simulated** in `vision_pipeline.home_and_scan_positions()` |
-| Camera capture | **Simulated** in `vision_pipeline.capture_frame()`; a USB/UVC webcam connected to the Raspberry Pi is planned, but not integrated |
-| YOLO detection + HSI/LBP + good/bad condition classification | **Simulated** in `vision_pipeline.detect_and_classify()` |
-| SMS alert to owner on bad detection | **Simulated** (printed to console + logged) in `notifier.send_sms()` |
+| SHT41 x3 / DS18B20 readings | Hardware adapter implemented; verify wiring and calibrate on the Pi |
+| Peltier / heatsink control | Not configured; the wiring PDF does not map relay loads or give a Peltier control pin |
+| Mist board control | GPIO21 0.5-second button press; validate behavior and pulse timing on the rig |
+| NEMA17 + DRV8825 | GPIO17 STEP, GPIO27 DIR, GPIO22 ENABLE; calibrate and verify homing/travel before scans |
+| Camera capture | USB/UVC `/dev/video0` adapter; verify framing and focus on the Pi |
+| Condition classification | HSI/LBP from each captured frame; optional Keras model needs verified class mapping |
+| SMS alert to owner | SIM800L AT-command integration on `/dev/serial0`; verify modem, SIM, signal, and SMS service |
 
-The planned scan camera is a USB/UVC webcam connected to the Raspberry Pi; it
-is not integrated yet. The dashboard can separately show a local browser camera
-preview after camera permission is granted. That preview is not uploaded or
-analyzed. The latest-scan location map and bounding boxes come from the
-simulated vision pipeline until a validated camera-connected object detector
-is installed. The shelf map has four numbered slots, dims unused slots, boxes
-bad samples, and polls for new scans every five seconds. Automatic cooler and
-mister control, climate alerts, and the daily adjustment log are also simulation-only
-until real sensors and actuators are connected. Temperature below range and
-humidity above range are reported, but this prototype has no heater or
-dehumidifier to correct them.
+The scan uses a USB/UVC webcam on the Pi and four fixed cucumber positions
+spaced 63.5 mm apart. A separate browser camera preview is optional and is not
+the camera used for scanning. Live climate readings require the Pi sensors and
+are marked stale when no recent reading is received. The cooler cannot operate
+until its Peltier/fan control wiring is identified; there is no heater or
+dehumidifier installed.
 
 The Owner Alerts section sends to the number configured in the local `.env`
 file as `CUKEGUARD_OWNER_PHONE`. The `.env` file is ignored by Git and should
 not be committed. This recipient applies to the active batch and future
 batches. Climate notifications are sent when conditions move out of range and
 when they return to range; repeated readings during the same excursion are
-deduplicated. Configure an SMS provider before expecting delivery.
+deduplicated. The configured SMS provider is a SIM800L modem on `/dev/serial0`;
+enable the Raspberry Pi UART, install `pyserial`, insert an active SIM with SMS
+service, and connect an antenna before expecting delivery. Power the modem
+through its EVB 5VIN input using a supply that meets the board's current needs;
+do not power it from a Pi GPIO pin. Verify the EVB UART logic levels are safe
+for the Pi's 3.3 V UART.
 
-### Hardware integration roadmap
+### Hardware integration guide
 
-See [HARDWARE_INTEGRATION.md](./HARDWARE_INTEGRATION.md) for the planned
-components, indexed-camera scan design, existing software hooks, safe bring-up
-sequence, and outstanding details. The roadmap is documented here rather than
-displayed in the dashboard. Identify the exact Raspberry Pi Stepper Motor
-HAT/driver before implementing motor control; GPIO assignments and electrical
-ratings are intentionally not guessed.
+See [HARDWARE_INTEGRATION.md](./HARDWARE_INTEGRATION.md) for the verified GPIO
+assignments and step-by-step Raspberry Pi setup. Peltier/fan output remains
+blocked until its wiring and relay/load mapping are confirmed.
 
 ## How the alert flow works
 
@@ -138,9 +128,10 @@ ratings are intentionally not guessed.
 4. Alerts are addressed to the fixed owner number in the local
    `CUKEGUARD_OWNER_PHONE` setting.
 
-### Enable test SMS with iProg
+### Optional cloud SMS: iProg
 
-In PowerShell, set the iProg token in the same terminal used to start Uvicorn:
+The default provider is the SIM800L hardware modem on the Raspberry Pi. If
+using iProg instead, set its token locally before starting Uvicorn:
 
 ```powershell
 $env:CUKEGUARD_SMS_PROVIDER = "iprog"
@@ -156,9 +147,10 @@ response is recorded as `submitted`: iProg has queued the message, but that
 does not confirm carrier delivery. Verify account credits and test with a
 number you control. The existing Semaphore setup is also supported.
 
-### Enable real SMS with Semaphore
+### Optional cloud SMS: Semaphore
 
-In PowerShell, set the provider credentials before starting Uvicorn:
+If using Semaphore instead of the default SIM800L, set its credentials before
+starting Uvicorn:
 
 ```powershell
 $env:CUKEGUARD_SMS_PROVIDER = "semaphore"
@@ -172,13 +164,11 @@ dashboard refreshes the alert list every five seconds; scans submit an SMS as
 soon as a bad sample is detected. Scheduled scans run every 3 hours by default,
 and a newly active temperature or humidity alert triggers an immediate scan.
 An alert status of `submitted` means Semaphore accepted the request, not that
-the carrier confirmed delivery. Without these settings, status is `simulated`
-and no text is sent.
+the carrier confirmed delivery.
 
-The simulated functions document the current adapter boundaries. Real motor,
-camera, sensor, and actuator integration still needs hardware-specific drivers,
-configuration, validation, and fault handling as described in the integration
-guide.
+If no SMS provider is configured, sending is reported as failed rather than
+silently treated as delivered. For the SIM800L UART wiring and Raspberry Pi
+setup, follow the hardware integration guide.
 
 ## Project layout
 

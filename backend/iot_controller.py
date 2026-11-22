@@ -1,19 +1,5 @@
-"""
-iot_controller.py — climate control loop.
-
-Right now this SIMULATES the SHT31-D + DS18B20 sensors and the
-Dual-Peltier / ultrasonic mister actuators, so the whole system runs
-without the physical rig attached.
-
-TO GO LIVE ON THE PI:
-  - Replace `read_temperature_humidity()` with real SHT31-D I2C reads
-    (e.g. via `adafruit_sht31d`) and DS18B20 1-Wire reads.
-  - Replace `apply_peltier_pwm()` / `set_mister()` with RPi.GPIO / gpiozero
-    calls to the MOSFET driving the Peltier array and the relay driving
-    the ultrasonic mister.
-  - Everything else (the control loop, DB writes, API shape) stays the same.
-"""
-import random
+"""Hardware climate control loop for the Raspberry Pi."""
+import os
 import time
 from datetime import datetime
 
@@ -21,11 +7,11 @@ from .database import SessionLocal, SensorReading, StorageBatch
 
 TARGET_TEMP_RANGE = (10.0, 12.5)
 TARGET_HUMIDITY_RANGE = (90.0, 95.0)
-DATA_MODE = "simulation"
+DATA_MODE = os.getenv("CUKEGUARD_DATA_MODE", "hardware").strip().lower()
+if DATA_MODE != "hardware":
+    raise RuntimeError("Simulation mode is disabled; set CUKEGUARD_DATA_MODE=hardware")
 
-_sim_state = {
-    "temp": 11.5,
-    "humidity": 92.5,
+_actuator_state = {
     "peltier_pwm": 0.0,
     "mister": False,
     "cabin_light": False,
@@ -33,29 +19,63 @@ _sim_state = {
 
 
 def read_temperature_humidity():
-    """SIMULATED sensor read. Replace with real SHT31-D / DS18B20 calls."""
-    temp = _sim_state["temp"] + random.uniform(-0.08, 0.08)
-    humidity = _sim_state["humidity"] + random.uniform(-0.2, 0.2)
-    return round(temp, 2), round(humidity, 2)
+    """Read real SHT41/DS18B20 sensors only in hardware mode."""
+    try:
+        from calibration import common, hw
+        sensors = getattr(read_temperature_humidity, "_sensors", None)
+        if sensors is None:
+            sensors = hw.Sensors()
+            read_temperature_humidity._sensors = sensors
+        cal = common.load()
+        return round(sensors.mean_temp(cal), 2), round(sensors.mean_rh(cal), 2)
+    except Exception as exc:
+        raise RuntimeError(f"Hardware sensor read failed: {exc}") from exc
 
 
 def apply_peltier_pwm(pwm_pct: float):
-    """SIMULATED actuator write. Replace with GPIO PWM to the Peltier MOSFET."""
-    _sim_state["peltier_pwm"] = pwm_pct
-    # cooling effect proportional to pwm
-    _sim_state["temp"] -= (pwm_pct / 100.0) * 0.25
+    """Peltier PWM remains blocked until its control pin is assigned."""
+    raise RuntimeError(
+        "Peltier/heatsink control is not assigned by the supplied wiring PDF"
+    )
 
 
 def set_mister(active: bool):
-    """SIMULATED actuator write. Replace with GPIO relay control."""
-    _sim_state["mister"] = active
+    """Press the mist-board button on GPIO21."""
     if active:
-        _sim_state["humidity"] += 1.2
+        from gpiozero import DigitalOutputDevice
+        mist = DigitalOutputDevice(21, initial_value=False)
+        try:
+            mist.on()
+            time.sleep(0.5)
+            mist.off()
+        finally:
+            mist.close()
+        _actuator_state["mister"] = True
+    else:
+        _actuator_state["mister"] = False
 
 
 def set_cabin_light(active: bool):
-    """SIMULATED cabin LED write. Replace with a verified LED driver interface."""
-    _sim_state["cabin_light"] = active
+    """Drive the WS2812B strip through rpi_ws281x when available."""
+    try:
+        from rpi_ws281x import Adafruit_NeoPixel, Color
+    except ImportError as exc:
+        raise RuntimeError(
+            "WS2812B control requires the rpi_ws281x package and sudo/root"
+        ) from exc
+
+    pixel_count = int(os.getenv("CUKEGUARD_LED_PIXELS", "1"))
+    brightness = int(os.getenv("CUKEGUARD_LED_BRIGHTNESS", "64"))
+    strip = Adafruit_NeoPixel(pixel_count, 18, 800000, 5, False, brightness, 0)
+    strip.begin()
+    if active:
+        for index in range(pixel_count):
+            strip.setPixelColor(index, Color(brightness, brightness, brightness))
+    else:
+        for index in range(pixel_count):
+            strip.setPixelColor(index, Color(0, 0, 0))
+    strip.show()
+    _actuator_state["cabin_light"] = active
 
 
 def plan_corrections(temp: float, humidity: float) -> tuple[float, bool, list[str]]:
@@ -86,7 +106,12 @@ def control_tick(batch: StorageBatch, db: SessionLocal) -> SensorReading:
     """One iteration of the closed-loop controller. Called on a timer."""
     temp, humidity = read_temperature_humidity()
     pwm, mister_active, note_parts = plan_corrections(temp, humidity)
-    apply_peltier_pwm(pwm)
+    if DATA_MODE == "hardware":
+        if pwm > 0:
+            note_parts.append("Peltier PWM is not configured by the wiring PDF")
+            pwm = 0.0
+    else:
+        apply_peltier_pwm(pwm)
     set_mister(mister_active)
 
     reading = SensorReading(
@@ -94,8 +119,8 @@ def control_tick(batch: StorageBatch, db: SessionLocal) -> SensorReading:
         timestamp=datetime.utcnow(),
         temperature_c=temp,
         humidity_pct=humidity,
-        peltier_pwm_pct=_sim_state["peltier_pwm"],
-        mister_active=int(_sim_state["mister"]),
+        peltier_pwm_pct=_actuator_state["peltier_pwm"],
+        mister_active=int(_actuator_state["mister"]),
         correction_note="; ".join(note_parts) if note_parts else None,
     )
     db.add(reading)

@@ -1,6 +1,6 @@
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
@@ -22,6 +22,7 @@ from backend.app import (
 from backend.database import (
     Base,
     CucumberSample,
+    SensorReading,
     ScanSession,
     SessionLocal,
     StorageBatch,
@@ -43,23 +44,48 @@ def test_health_endpoint(client):
     assert response.json()["status"] == "ok"
 
 
-def test_system_status_reports_demo_mode_and_target_bands(client):
+def test_stale_sensor_readings_are_flagged_and_cooler_is_unavailable(client):
+    db = SessionLocal()
+    db.add(
+        SensorReading(
+            timestamp=datetime.utcnow() - timedelta(days=2),
+            temperature_c=13.0,
+            humidity_pct=92.0,
+            peltier_pwm_pct=100.0,
+            mister_active=0,
+        )
+    )
+    db.commit()
+    db.close()
+
+    response = client.get("/api/sensors/latest")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["is_stale"] is True
+    assert data["cooler_available"] is False
+    assert data["cooler_active"] is False
+    assert data["is_correcting"] is False
+    assert data["control_status"] == "needs_hardware"
+
+
+def test_system_status_reports_hardware_mode_and_target_bands(client):
     response = client.get("/api/system/status")
     assert response.status_code == 200
     data = response.json()
-    assert data["mode"] == "simulation"
+    assert data["mode"] == "hardware"
     assert data["auto_scan_interval_seconds"] == AUTO_SCAN_SECONDS == 10800
     next_scan = datetime.fromisoformat(data["next_auto_scan_at"])
     assert next_scan.tzinfo == timezone.utc
     assert 0 < (next_scan - datetime.now(timezone.utc)).total_seconds() <= AUTO_SCAN_SECONDS
     assert data["climate_ranges"]["temperature_c"] == {"min": 10.0, "max": 12.5}
     assert data["climate_ranges"]["humidity_pct"] == {"min": 90.0, "max": 95.0}
-    assert data["components"]["stepper"] == "simulated"
-    assert data["components"]["limit_switches"] == "not_configured"
-    assert data["components"]["cabin_light"] == "simulated"
+    assert data["components"]["stepper"] == "configured_not_calibrated"
+    assert data["components"]["limit_switches"] == "configured_not_confirmed"
+    assert data["components"]["cabin_light"] == "configured_not_tested"
     assert any(
         component["name"] == "Cabin LED strip"
-        and component["status"] == "simulated"
+        and component["status"] == "configured_not_tested"
         for component in data["hardware_integration"]
     )
     assert any(
@@ -102,8 +128,8 @@ def test_hardware_integration_guide_is_served(client):
 
     assert response.status_code == 200
     assert "Raspberry Pi Stepper Motor HAT" in response.text
-    assert "Never directly" not in response.text
-    assert "never directly to Raspberry Pi GPIO" in response.text
+    assert "Never connect motor coils" in response.text
+    assert "directly to Pi GPIO" in response.text
 
 
 def test_controller_reports_missing_heating_and_dehumidification():
@@ -185,7 +211,7 @@ def test_climate_notifications_are_deduplicated_until_recovery(monkeypatch):
     monkeypatch.setattr(
         notifier,
         "send_sms",
-        lambda phone, message: sent_messages.append(message) or "simulated",
+        lambda phone, message: sent_messages.append(message) or "submitted",
     )
 
     first = notifier.notify_climate_change(
@@ -204,18 +230,72 @@ def test_climate_notifications_are_deduplicated_until_recovery(monkeypatch):
     assert len(sent_messages) == 2
 
 
-def test_simulated_readings_remain_inside_storage_ranges():
-    readings = [iot_controller.read_temperature_humidity() for _ in range(50)]
-    assert all(10.0 <= temp <= 12.5 for temp, _ in readings)
-    assert all(90.0 <= humidity <= 95.0 for _, humidity in readings)
+def test_hardware_reading_adapter_is_used(monkeypatch):
+    monkeypatch.setattr(
+        iot_controller,
+        "read_temperature_humidity",
+        lambda: (11.5, 92.5),
+    )
+    temp, humidity = iot_controller.read_temperature_humidity()
+    assert 10.0 <= temp <= 12.5
+    assert 90.0 <= humidity <= 95.0
 
 
-def test_sms_is_explicitly_simulated_without_provider(monkeypatch):
+def test_sms_is_explicitly_unconfigured_without_provider(monkeypatch):
     monkeypatch.delenv("CUKEGUARD_SMS_PROVIDER", raising=False)
     monkeypatch.delenv("SEMAPHORE_API_KEY", raising=False)
 
-    assert notifier.sms_mode() == "simulated"
-    assert notifier.send_sms("+639000000000", "test") == "simulated"
+    assert notifier.sms_mode() == "unconfigured"
+    assert notifier.send_sms("+639000000000", "test") == "failed: provider unconfigured"
+
+
+def test_sms_submits_through_sim800l_uart(monkeypatch):
+    class FakePort:
+        def __init__(self):
+            self.writes = []
+            self.pending = bytearray()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+        def reset_input_buffer(self):
+            pass
+
+        def flush(self):
+            pass
+
+        def write(self, data):
+            self.writes.append(data)
+            if data == b"AT\r" or data == b"AT+CMGF=1\r":
+                self.pending.extend(b"OK\r\n")
+            elif data.startswith(b'AT+CMGS="'):
+                self.pending.extend(b"> ")
+            elif data.endswith(b"\x1a"):
+                self.pending.extend(b"\r\n+CMGS: 12\r\nOK\r\n")
+
+        def read(self, size=1):
+            if not self.pending:
+                return b""
+            value = bytes(self.pending[:size])
+            del self.pending[:size]
+            return value
+
+    fake_port = FakePort()
+    monkeypatch.setenv("CUKEGUARD_SMS_PROVIDER", "sim800l")
+    monkeypatch.setenv("CUKEGUARD_SIM800L_PORT", "/dev/serial0")
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "serial",
+        SimpleNamespace(Serial=lambda *args, **kwargs: fake_port),
+    )
+
+    assert notifier.sms_mode() == "sim800l"
+    assert notifier.send_sms("+639709634243", "bad cucumber") == "submitted"
+    assert b'AT+CMGS="+639709634243"\r' in fake_port.writes
+    assert b"bad cucumber\x1a" in fake_port.writes
 
 
 def test_sms_submits_to_semaphore_when_configured(monkeypatch):
@@ -326,37 +406,57 @@ def test_iprog_selection_without_token_fails_instead_of_simulating(monkeypatch):
 
 
 def test_scan_numbers_cucumbers_right_to_left(monkeypatch):
-    def fake_detect(frame):
-        positions = {600: [100, 500], 0: [300]}
-        return [
+    monkeypatch.setattr(iot_controller, "set_cabin_light", lambda active: None)
+    monkeypatch.setattr(
+        vision_pipeline,
+        "home_and_scan_positions",
+        lambda: [0.0, 63.5, 127.0, 190.5],
+    )
+    monkeypatch.setattr(
+        vision_pipeline,
+        "capture_frame",
+        lambda position: {"position_mm": position, "image": object()},
+    )
+    def fake_detect(frame, object_count=None):
+        positions = {0: [100], 63.5: [200], 127.0: [300], 190.5: [400]}
+        samples = [
             {"bbox_x": x_position, "condition": "good"}
             for x_position in positions.get(frame["position_mm"], [])
         ]
+        return samples
 
     monkeypatch.setattr(vision_pipeline, "detect_and_classify", fake_detect)
 
     samples, counts = vision_pipeline.run_scan(batch_id=1)
 
-    assert counts == {"good": 3, "bad": 0}
-    assert [sample["cucumber_number"] for sample in samples] == [1, 2, 3]
+    assert counts == {"good": 4, "bad": 0}
+    assert [sample["cucumber_number"] for sample in samples] == [1, 2, 3, 4]
     assert [(sample["track_position_mm"], sample["bbox_x"]) for sample in samples] == [
-        (600, 500), (600, 100), (0, 300)
+        (0, 100), (63.5, 200), (127.0, 300), (190.5, 400)
     ]
 
 
-def test_scan_uses_batch_expected_quantity(monkeypatch):
+def test_scan_always_uses_four_fixed_cucumbers(monkeypatch):
+    monkeypatch.setattr(iot_controller, "set_cabin_light", lambda active: None)
+    monkeypatch.setattr(
+        vision_pipeline,
+        "home_and_scan_positions",
+        lambda: [0.0, 63.5, 127.0, 190.5],
+    )
+    monkeypatch.setattr(
+        vision_pipeline,
+        "capture_frame",
+        lambda position: {"position_mm": position, "image": object()},
+    )
     def fake_detect(frame, object_count=None):
-        return [
-            {"bbox_x": 100.0, "condition": "good"}
-            for _ in range(object_count or 0)
-        ]
+        return [{"bbox_x": 100.0, "condition": "good"}]
 
     monkeypatch.setattr(vision_pipeline, "detect_and_classify", fake_detect)
 
     samples, counts = vision_pipeline.run_scan(batch_id=1, expected_count=3)
 
-    assert len(samples) == 3
-    assert counts == {"good": 3, "bad": 0}
+    assert len(samples) == 4
+    assert counts == {"good": 4, "bad": 0}
 
 
 def test_legacy_inspection_samples_migrate_to_good_or_bad(client):
@@ -397,12 +497,12 @@ def test_legacy_inspection_samples_migrate_to_good_or_bad(client):
     assert migrated_conditions == ["good", "bad", "bad"]
 
 
-def test_cabin_light_simulator_tracks_requested_state():
+def test_cabin_light_hardware_state_tracks_requested_state(monkeypatch):
+    states = []
+    monkeypatch.setattr(iot_controller, "set_cabin_light", lambda active: states.append(active))
     iot_controller.set_cabin_light(True)
-    assert iot_controller._sim_state["cabin_light"] is True
-
     iot_controller.set_cabin_light(False)
-    assert iot_controller._sim_state["cabin_light"] is False
+    assert states == [True, False]
 
 
 def test_scan_light_stays_on_during_movement_and_capture(monkeypatch):
@@ -420,7 +520,11 @@ def test_scan_light_stays_on_during_movement_and_capture(monkeypatch):
         "capture_frame",
         lambda position: events.append(("capture", position)) or {"position_mm": position},
     )
-    monkeypatch.setattr(vision_pipeline, "detect_and_classify", lambda frame: [])
+    monkeypatch.setattr(
+        vision_pipeline,
+        "detect_and_classify",
+        lambda frame, object_count=None: [],
+    )
 
     vision_pipeline.run_scan(batch_id=1)
 
@@ -490,25 +594,26 @@ def test_owner_phone_is_fixed_for_active_and_new_batches(client):
 
 
 def test_manual_scan_creates_scan_session(client, monkeypatch):
+    monkeypatch.delenv("CUKEGUARD_SMS_PROVIDER", raising=False)
     active_before = client.get("/api/batch/active").json()
     batch_response = client.post(
         "/api/batch",
-        json={"initial_quantity": 3},
+        json={"initial_quantity": 4},
     )
     assert batch_response.status_code == 200
     new_batch = batch_response.json()
     assert new_batch["id"] > active_before["id"]
     assert new_batch["batch_code"] == f"BATCH-{new_batch['id']:04d}"
-    assert new_batch["initial_quantity"] == 3
+    assert new_batch["initial_quantity"] == 4
     assert active_before["owner_phone"] == OWNER_PHONE
     assert client.get("/api/batch/active").json()["owner_phone"] == OWNER_PHONE
     assert client.get("/api/scan/latest").status_code == 404
 
     scan_call = {}
 
-    def fixed_scan(batch_id, expected_count=None):
+    def fixed_scan(batch_id, expected_count=None, on_capture=None):
         scan_call.update(batch_id=batch_id, expected_count=expected_count)
-        return [
+        samples = [
             {
                 "bbox_x": 500.0,
                 "bbox_y": 100.0,
@@ -548,7 +653,11 @@ def test_manual_scan_creates_scan_session(client, monkeypatch):
                 "track_position_mm": 300,
                 "cucumber_number": 3,
             },
-        ], {"good": 2, "bad": 1}
+        ]
+        if on_capture:
+            for sample in samples:
+                on_capture(sample)
+        return samples, {"good": 2, "bad": 1}
 
     monkeypatch.setattr(vision_pipeline, "run_scan", fixed_scan)
     schedule_resets = []
@@ -561,7 +670,7 @@ def test_manual_scan_creates_scan_session(client, monkeypatch):
     assert schedule_resets == [True]
     data = response.json()
     assert "scan_session_id" in data
-    assert scan_call == {"batch_id": new_batch["id"], "expected_count": 3}
+    assert scan_call == {"batch_id": new_batch["id"], "expected_count": 4}
 
     history_response = client.get("/api/scan/history?limit=1")
     assert history_response.status_code == 200
@@ -594,7 +703,7 @@ def test_manual_scan_creates_scan_session(client, monkeypatch):
         if f"Scan S-{scan['scan_session_id']:04d}:" in row["message"]
     )
     alert_message = alert["message"]
-    assert alert["delivery_status"] == "simulated"
+    assert alert["delivery_status"] == "failed: provider unconfigured"
     assert f"Batch B-{scan['batch_id']:04d}" in alert_message
     assert "bad cucumber(s) #1" in alert_message
 

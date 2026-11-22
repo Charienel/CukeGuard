@@ -105,7 +105,7 @@ class AlertLog(Base):
     phone_number = Column(String)
     message = Column(String)
     bad_count = Column(Integer, default=0)
-    delivery_status = Column(String, default="simulated")  # "submitted" | "simulated" | "failed"
+    delivery_status = Column(String, default="failed: provider unconfigured")  # "submitted" | "failed"
     alert_type = Column(String, nullable=False, default="condition")
 
     batch = relationship("StorageBatch", back_populates="alerts")
@@ -200,7 +200,7 @@ def init_db():
                     existing_columns.remove(column_name)
 
         connection.exec_driver_sql(
-            "UPDATE alert_log SET delivery_status = 'simulated' "
+            "UPDATE alert_log SET delivery_status = 'failed: provider unconfigured' "
             "WHERE delivery_status = 'sent'"
         )
         alert_columns = {

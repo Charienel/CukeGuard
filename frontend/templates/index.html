@@ -23,10 +23,10 @@
     <div class="topbar-actions">
       <div class="mode-badge" id="system-mode">
         <span class="mode-indicator"></span>
-        <span><strong id="system-mode-label">SIMULATION MODE</strong><small id="system-mode-detail">Sensors, camera, controls and SMS are simulated</small></span>
+        <span><strong id="system-mode-label">HARDWARE MODE</strong><small id="system-mode-detail">Reading Pi sensors and controlling installed hardware</small></span>
       </div>
       <button id="new-batch-btn" class="btn-secondary" type="button">New Batch</button>
-      <button id="manual-scan-btn" class="btn-primary">Run Demo Scan</button>
+      <button id="manual-scan-btn" class="btn-primary">Run Scan</button>
     </div>
   </header>
 
@@ -81,7 +81,7 @@
             <button id="stop-camera-btn" class="btn-secondary" type="button" disabled>Stop Camera</button>
             <span id="camera-status" role="status">Camera not started</span>
           </div>
-          <p class="capability-note">Browser preview only. It is not sent to the server or analyzed by the current classifier.</p>
+          <p class="capability-note">Optional browser preview only. Actual scan frames come from the Pi USB webcam and are classified by CukeGuard.</p>
         </div>
         <div class="scan-map-column">
           <div class="scan-map-heading">
@@ -96,7 +96,7 @@
           <div id="bad-location-list" class="bad-location-list" aria-live="polite">
             <p>No scan locations yet.</p>
           </div>
-          <p class="capability-note">The shelf has four numbered slots. Detected cucumbers and bad-condition markers update from the latest scan; unused slots stay dimmed. Demo scan results are simulated until the webcam and detector are integrated.</p>
+          <p class="capability-note">The shelf has four numbered slots. Detected cucumbers and bad-condition markers update after each real capture.</p>
         </div>
       </div>
     </section>
@@ -110,8 +110,9 @@
         <span class="range-chip" id="climate-range-chip">10–12.5°C · 90–95% RH</span>
       </div>
       <canvas id="climate-chart" height="90"></canvas>
+      <p class="capability-note" id="climate-history-empty" hidden>No sensor readings were recorded in the last 24 hours.</p>
       <p class="log-line" id="correction-log">Waiting for the first sensor reading.</p>
-      <p class="capability-note" id="capability-note">Cooling and misting are simulated. Heating and dehumidification hardware are not configured.</p>
+      <p class="capability-note" id="capability-note">Mist control is configured. The Peltier and heatsink fan control pin is not yet assigned.</p>
     </section>
 
     <section class="panel schedule-panel">
@@ -133,7 +134,7 @@
           <h2>Automatic Climate Adjustment</h2>
           <p class="panel-subtitle">Closed-loop control status and today's correction log (UTC)</p>
         </div>
-        <span class="range-chip">Automatic · simulated actuators</span>
+        <span class="range-chip">Automatic · configured hardware</span>
       </div>
       <div class="automation-status">
         <div class="actuator-card">
@@ -176,7 +177,7 @@
     </section>
 
     <section class="panel samples-panel">
-      <h2 id="vision-title">Latest Scan (Simulated)</h2>
+      <h2 id="vision-title">Latest Scan</h2>
       <div class="table-wrap">
         <table id="sample-table">
           <thead>

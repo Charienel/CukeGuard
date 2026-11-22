@@ -6,9 +6,8 @@ Hardware libraries are imported inside the classes so the analysis code can be
 tested on a laptop.
 
 Install on the Pi (inside your venv):
-    pip install gpiozero adafruit-circuitpython-sht31d adafruit-circuitpython-tca9548a \
-                w1thermsensor adafruit-circuitpython-motorkit
-    (picamera2 comes from apt: sudo apt install python3-picamera2)
+    pip install gpiozero adafruit-circuitpython-sht4x adafruit-circuitpython-tca9548a \
+                w1thermsensor opencv-python
 """
 import signal
 import statistics
@@ -17,29 +16,35 @@ from contextlib import contextmanager
 
 from . import common
 
-# ---------- EDIT: pins (BCM numbers) ----------
-PIN_PELTIER_PWM = 18      # MOSFET gate signal
-PIN_HEATSINK_FANS = 23    # hot-side fans (on/off)
-PIN_MIST_RELAY = 24       # relay driving the 24 V mist maker
-PIN_LED = 25              # LED strip switch
-PIN_LIMIT_HOME = 5        # limit switch to GND, internal pull-up
+# ---------- Raspberry Pi 4 GPIO assignments (BCM numbers) ----------
+# Do not infer a Peltier or fan control scheme from the 4-relay module:
+# the PDF does not state which relay output/coil controls them.
+PIN_PELTIER_PWM = None    # Not assigned in the wiring PDF
+PIN_HEATSINK_FANS = None  # GPIO12/13 reserved; assignment not confirmed
+PIN_MIST_BUTTON = 21      # transistor switch for the mist-board button circuit
+PIN_MIST_RELEASE = 21
+PIN_LED = 18              # WS2812B data, 330 ohm series resistor
+PIN_LIMIT_HOME = 5        # NC limit switch to GND, internal pull-up
 PIN_LIMIT_FAR = 6
 
-RELAY_ACTIVE_HIGH = True  # set False if your relay board switches on a LOW input
+PIN_RELAY_IN1 = 16
+PIN_RELAY_IN2 = 19
+PIN_RELAY_IN3 = 20
+PIN_RELAY_IN4 = 26
+RELAY_ACTIVE_HIGH = False # active-low relay module
+PIN_MUX_RST = 24
 PELTIER_PWM_HZ = 1000
 FAN_OVERRUN_S = 45        # fans keep running this long after the Peltier stops
+MIST_PRESS_S = 0.5
 
 # ---------- EDIT: sensors ----------
-SHT31_MUX_CHANNELS = []   # [] = SHT31-D directly on the I2C bus; [0, 1] = behind TCA9548A channels
-SHT31_ADDRESSES = [0x44]  # used only when there is no mux (0x45 if the ADDR pin is pulled high)
+SHT41_MUX_CHANNELS = [0, 1, 2]  # three SHT41 sensors, one on each used mux channel
+SHT41_ADDRESS = 0x44
 
-# ---------- EDIT: stepper ----------
-# Set these to BCM GPIO numbers before running any stepper calibration.
-# The physical GPIO input level may differ from the logical enable state:
-# DRV8825 nENABLE is active-low, so ENABLE_ACTIVE_LOW should normally be True.
-PIN_STEPPER_STEP = None
-PIN_STEPPER_DIR = None
-PIN_STEPPER_ENABLE = None
+# ---------- stepper ----------
+PIN_STEPPER_STEP = 17
+PIN_STEPPER_DIR = 27
+PIN_STEPPER_ENABLE = 22
 PIN_STEPPER_SLEEP = None
 PIN_STEPPER_RESET = None
 
@@ -54,22 +59,29 @@ ABS_MAX_RH = 98.5         # misting is cut above this (condensation / wet cucumb
 
 
 class Sensors:
-    """SHT31-D (one or more) and the DS18B20 probe."""
+    """SHT41 sensors (through TCA9548A) and the DS18B20 probe."""
 
     def __init__(self):
         import board
         import busio
-        import adafruit_sht31d
         i2c = busio.I2C(board.SCL, board.SDA)
         self._sht = []
-        if SHT31_MUX_CHANNELS:
+        if SHT41_MUX_CHANNELS:
+            import adafruit_sht4x
             import adafruit_tca9548a
-            mux = adafruit_tca9548a.TCA9548A(i2c)
-            for ch in SHT31_MUX_CHANNELS:
-                self._sht.append(adafruit_sht31d.SHT31D(mux[ch]))
+            if PIN_MUX_RST is not None:
+                from gpiozero import DigitalOutputDevice
+                rst = DigitalOutputDevice(PIN_MUX_RST, initial_value=True)
+                rst.off()
+                time.sleep(0.01)
+                rst.on()
+                rst.close()
+            mux = adafruit_tca9548a.TCA9548A(i2c, address=0x70)
+            for ch in SHT41_MUX_CHANNELS:
+                self._sht.append(adafruit_sht4x.SHT4x(mux[ch]))
         else:
-            for addr in SHT31_ADDRESSES:
-                self._sht.append(adafruit_sht31d.SHT31D(i2c, address=addr))
+            import adafruit_sht4x
+            self._sht.append(adafruit_sht4x.SHT4x(i2c))
         try:
             from w1thermsensor import W1ThermSensor
             self.ds = W1ThermSensor()
@@ -91,52 +103,50 @@ class Sensors:
 
     def mean_temp(self, cal=None) -> float:
         """Average of all temperature sensors, with calibration applied if given."""
-        vals = [common.apply_sensor_cal(cal, f"sht31_{i}_temp", self.sht_temp(i)) for i in range(self.sht_count)]
+        vals = [common.apply_sensor_cal(cal, f"sht41_{i}_temp", self.sht_temp(i)) for i in range(self.sht_count)]
         if self.ds is not None:
             vals.append(common.apply_sensor_cal(cal, "ds18b20_temp", self.ds_temp()))
         return statistics.fmean(vals)
 
     def mean_rh(self, cal=None) -> float:
-        vals = [common.apply_sensor_cal(cal, f"sht31_{i}_rh", self.sht_rh(i)) for i in range(self.sht_count)]
+        vals = [common.apply_sensor_cal(cal, f"sht41_{i}_rh", self.sht_rh(i)) for i in range(self.sht_count)]
         return statistics.fmean(vals)
 
 
 class Outputs:
-    """Peltier (via MOSFET), heatsink fans, mist relay and LED strip."""
+    """Configured outputs. Relay loads and Peltier PWM are not guessed."""
 
     def __init__(self):
-        from gpiozero import OutputDevice, PWMOutputDevice
-        self._peltier = PWMOutputDevice(PIN_PELTIER_PWM, frequency=PELTIER_PWM_HZ, initial_value=0)
-        self._fans = OutputDevice(PIN_HEATSINK_FANS, initial_value=False)
-        self._mist = OutputDevice(PIN_MIST_RELAY, active_high=RELAY_ACTIVE_HIGH, initial_value=False)
-        self._led = OutputDevice(PIN_LED, initial_value=False)
+        from gpiozero import DigitalOutputDevice
+        self._mist = DigitalOutputDevice(PIN_MIST_BUTTON, initial_value=False)
         self._peltier_used = False
+        self._fans = None
+        self._peltier = None
 
     def peltier(self, duty_pct: float) -> None:
-        duty = max(0.0, min(100.0, duty_pct))
-        if duty > 0:
-            self._fans.on()                # fans first: never run a Peltier without hot-side cooling
-            self._peltier.value = duty / 100.0
-            self._peltier_used = True
-        else:
-            self._peltier.value = 0
+        if PIN_PELTIER_PWM is None:
+            raise RuntimeError(
+                "Peltier PWM/heatsink control is not assigned in calibration/hw.py "
+                "because the wiring PDF does not identify the 4-relay load mapping."
+            )
 
     def mist(self, on: bool) -> None:
-        self._mist.on() if on else self._mist.off()
+        if on:
+            self._mist.on()
+            time.sleep(MIST_PRESS_S)
+            self._mist.off()
 
     def led(self, on: bool) -> None:
-        self._led.on() if on else self._led.off()
+        # WS2812B is a one-wire device, not a gpiozero output. Integration
+        # requires the rpi_ws281x library and root; this remains a placeholder.
+        if on:
+            print("LED requested ON on GPIO18 (WS2812B; use rpi_ws281x adapter)")
+        else:
+            print("LED requested OFF on GPIO18 (WS2812B; use rpi_ws281x adapter)")
 
     def shutdown(self) -> None:
-        self._peltier.value = 0
         self._mist.off()
-        self._led.off()
-        if self._peltier_used:
-            print(f"Peltier off. Keeping heatsink fans on for {FAN_OVERRUN_S} s...")
-            time.sleep(FAN_OVERRUN_S)
-        self._fans.off()
-        for dev in (self._peltier, self._fans, self._mist, self._led):
-            dev.close()
+        self._mist.close()
 
 
 @contextmanager
@@ -247,11 +257,40 @@ class Limits:
         self.far = Button(PIN_LIMIT_FAR, pull_up=True)
 
 
+class UsbCamera:
+    """Small capture wrapper for OpenCV's /dev/video0 adapter."""
+
+    def __init__(self, size=(1280, 720), index=0):
+        import cv2
+        self._cv2 = cv2
+        self._cam = cv2.VideoCapture(index)
+        if not self._cam.isOpened():
+            self._cam.release()
+            raise RuntimeError("USB webcam is not available at /dev/video0")
+        self._cam.set(cv2.CAP_PROP_FRAME_WIDTH, size[0])
+        self._cam.set(cv2.CAP_PROP_FRAME_HEIGHT, size[1])
+
+    def capture_array(self):
+        ok, frame = self._cam.read()
+        if not ok or frame is None:
+            raise RuntimeError("USB webcam frame capture failed")
+        return self._cv2.cvtColor(frame, self._cv2.COLOR_BGR2RGB)
+
+    def set_controls(self, controls):
+        # Webcam V4L2 controls require a device-specific adapter. This wrapper
+        # deliberately does not claim that arbitrary controls succeeded.
+        return None
+
+    def capture_metadata(self):
+        return {"ColourGains": (1.0, 1.0), "ExposureTime": 0, "AnalogueGain": 1.0}
+
+    def stop(self):
+        return None
+
+    def close(self):
+        self._cam.release()
+
+
 def open_camera(size=(1280, 720)):
-    """Start the Pi camera. picamera2's 'BGR888' format gives arrays in R,G,B order
-    (the naming is confusing, see README); run calibrate_camera --check-channels to confirm."""
-    from picamera2 import Picamera2
-    cam = Picamera2()
-    cam.configure(cam.create_still_configuration(main={"size": size, "format": "BGR888"}))
-    cam.start()
-    return cam
+    """Open the USB/UVC webcam used by CukeGuard."""
+    return UsbCamera(size=size, index=0)

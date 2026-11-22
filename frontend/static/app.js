@@ -59,7 +59,7 @@ function updateAlertBanner() {
     ? `SMS ${status}`
     : ({
         submitted: "SMS accepted by provider",
-        simulated: "SMS simulated, not delivered",
+        "failed: provider unconfigured": "SMS provider not configured",
       }[status] || "SMS status unknown");
   const alertLabel = latestAlert.alert_type === "climate"
     ? "Climate alert"
@@ -84,21 +84,22 @@ async function loadBatch() {
 async function loadSystemStatus() {
   try {
     const status = await fetchJSON("/system/status");
-    const simulated = status.mode === "simulation";
-    document.getElementById("system-mode-label").textContent = simulated ? "SIMULATION MODE" : "HARDWARE MODE";
+    const hardwareMode = status.mode === "hardware";
+    document.getElementById("system-mode-label").textContent = hardwareMode ? "HARDWARE MODE" : "HARDWARE REQUIRED";
     const smsMode = status.components.sms;
     const smsDetail = smsMode === "semaphore"
       ? "Semaphore SMS configured"
       : smsMode === "iprog"
         ? "iProg SMS configured"
+        : smsMode === "sim800l"
+          ? "SIM800L SMS configured"
         : smsMode.endsWith("_unconfigured")
           ? `${smsMode.split("_")[0]} selected; API token missing`
-          : "SMS simulated";
-    document.getElementById("system-mode-detail").textContent = simulated
-      ? `Sensors, camera and controls simulated · ${smsDetail}`
-      : `Connected hardware readings and controls · ${smsDetail}`;
-    document.getElementById("manual-scan-btn").textContent = simulated ? "Run Demo Scan" : "Run Scan";
-    document.getElementById("vision-title").textContent = simulated ? "Latest Scan (Simulated)" : "Latest Scan";
+          : "SMS unconfigured";
+    document.getElementById("system-mode-detail").textContent =
+      `Pi sensors, USB camera and configured controls · ${smsDetail}`;
+    document.getElementById("manual-scan-btn").textContent = "Run Scan";
+    document.getElementById("vision-title").textContent = "Latest Scan";
 
     const temp = status.climate_ranges.temperature_c;
     const humidity = status.climate_ranges.humidity_pct;
@@ -119,6 +120,23 @@ async function loadSystemStatus() {
 async function loadLatestSensor() {
   try {
     const r = await fetchJSON("/sensors/latest");
+    const banner = document.getElementById("status-banner");
+    const text = document.getElementById("status-text");
+    if (r.is_stale) {
+      const lastReading = parseApiDate(r.timestamp);
+      document.getElementById("metric-temp").textContent = "--°C";
+      document.getElementById("metric-humidity").textContent = "--%";
+      document.getElementById("correction-log").textContent =
+        "Waiting for a fresh reading from the Raspberry Pi sensors.";
+      updateActuatorCard("cooler-state", false, "Unavailable · control pin not assigned", true);
+      updateActuatorCard("humidifier-state", false, "Unknown · sensor data is stale", true);
+      banner.classList.remove("correcting", "alert");
+      banner.classList.add("limited");
+      text.textContent = `No live sensor data · last reading ${lastReading.toLocaleString()}`;
+      updateAlertBanner();
+      return;
+    }
+
     document.getElementById("metric-temp").textContent = `${r.temperature_c.toFixed(1)}°C`;
     document.getElementById("metric-humidity").textContent = `${r.humidity_pct.toFixed(1)}%`;
     document.getElementById("correction-log").textContent = r.correction_note
@@ -126,8 +144,11 @@ async function loadLatestSensor() {
       : "Both readings are within the target ranges.";
     updateActuatorCard(
       "cooler-state",
-      r.cooler_active,
-      r.cooler_active ? `ACTIVE · ${r.peltier_pwm_pct.toFixed(0)}%` : "Standby",
+      r.cooler_available && r.cooler_active,
+      !r.cooler_available
+        ? "Unavailable · control pin not assigned"
+        : r.cooler_active ? `ACTIVE · ${r.peltier_pwm_pct.toFixed(0)}%` : "Standby",
+      !r.cooler_available,
     );
     updateActuatorCard(
       "humidifier-state",
@@ -135,8 +156,6 @@ async function loadLatestSensor() {
       r.humidifier_active ? "BOOSTED · MIST ON" : "Standby",
     );
 
-    const banner = document.getElementById("status-banner");
-    const text = document.getElementById("status-text");
     banner.classList.remove("correcting", "alert", "limited");
     if (r.control_status === "stable") {
       text.textContent = `Climate in range · ${r.temperature_c.toFixed(1)}°C / ${r.humidity_pct.toFixed(1)}% RH`;
@@ -154,11 +173,11 @@ async function loadLatestSensor() {
   } catch (e) { console.warn(e); }
 }
 
-function updateActuatorCard(id, active, label) {
+function updateActuatorCard(id, active, label, warning = false) {
   const element = document.getElementById(id);
   element.textContent = label;
   element.classList.toggle("active", active);
-  element.classList.toggle("warning", false);
+  element.classList.toggle("warning", warning);
 }
 
 async function loadAlerts() {
@@ -205,7 +224,7 @@ async function loadAutomationHistory() {
         `${event.temperature_c.toFixed(1)}°C`,
         `${event.humidity_pct.toFixed(1)}% RH`,
         event.note,
-        "Simulation",
+        "Hardware",
       ];
       values.forEach(value => {
         const td = document.createElement("td");
@@ -222,6 +241,18 @@ async function loadAutomationHistory() {
 async function loadHistoryChart() {
   try {
     const rows = (await fetchJSON("/sensors/history?hours=24")).slice(-10);
+    const canvas = document.getElementById("climate-chart");
+    const emptyState = document.getElementById("climate-history-empty");
+    canvas.hidden = rows.length === 0;
+    emptyState.hidden = rows.length > 0;
+    if (!rows.length) {
+      if (climateChart) {
+        climateChart.data.labels = [];
+        climateChart.data.datasets.forEach(dataset => { dataset.data = []; });
+        climateChart.update();
+      }
+      return;
+    }
     const labels = rows.map((_, index) => index + 1);
     const temps = rows.map(r => r.temperature_c);
     const hums = rows.map(r => r.humidity_pct);
@@ -261,9 +292,10 @@ async function loadLatestScan() {
   const tbody = document.querySelector("#sample-table tbody");
   try {
     const scan = await fetchJSON("/scan/latest");
-    if (scan.scan_session_id === latestRenderedScanId) return;
+    const scanSignature = `${scan.scan_session_id}:${scan.samples.length}:${scan.samples.map(s => s.condition).join(",")}`;
+    if (scanSignature === latestRenderedScanId) return;
     renderScanMap(scan);
-    latestRenderedScanId = scan.scan_session_id;
+    latestRenderedScanId = scanSignature;
 
     document.getElementById("metric-condition").textContent =
       `${scan.counts.good}/${scan.counts.bad}`;
@@ -519,7 +551,7 @@ setInterval(loadLatestSensor, 5000);
 setInterval(loadHistoryChart, 15000);
 setInterval(loadAlerts, 5000);
 setInterval(loadAutomationHistory, 15000);
-setInterval(loadLatestScan, 5000);
+setInterval(loadLatestScan, 1000);
 
 document.getElementById("start-camera-btn").addEventListener("click", async () => {
   const status = document.getElementById("camera-status");
@@ -534,7 +566,7 @@ document.getElementById("start-camera-btn").addEventListener("click", async () =
     document.getElementById("camera-placeholder").hidden = true;
     document.getElementById("start-camera-btn").disabled = true;
     document.getElementById("stop-camera-btn").disabled = false;
-    status.textContent = "Live local preview · not analyzed";
+    status.textContent = "Optional browser preview";
   } catch (error) {
     status.textContent = `Camera unavailable: ${error.message}`;
   }

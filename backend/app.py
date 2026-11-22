@@ -268,23 +268,29 @@ def _execute_scan(batch_id: int, db: Session, trigger_type: str) -> ScanSession:
     db.refresh(session_row)
 
     batch = db.query(StorageBatch).filter(StorageBatch.id == batch_id).first()
-    expected_count = batch.initial_quantity if batch else None
-    samples, counts = vision_pipeline.run_scan(batch_id, expected_count)
-    for s in samples:
-        db.add(CucumberSample(batch_id=batch_id, scan_id=session_row.id, **s))
+    persisted_samples = []
 
-    db.commit()
+    def persist_capture(sample: dict) -> None:
+        row = CucumberSample(batch_id=batch_id, scan_id=session_row.id, **sample)
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        persisted_samples.append(row)
+        if sample["condition"] == "bad":
+            notifier.notify_bad_condition(
+                db,
+                batch,
+                session_row.id,
+                [sample["cucumber_number"]],
+            )
+
+    expected_count = 4
+    samples, counts = vision_pipeline.run_scan(
+        batch_id,
+        expected_count,
+        on_capture=persist_capture,
+    )
     db.refresh(session_row)
-
-    bad_cucumber_numbers = [
-        sample["cucumber_number"]
-        for sample in samples
-        if sample["condition"] == "bad"
-    ]
-    if bad_cucumber_numbers:
-        notifier.notify_bad_condition(
-            db, batch, session_row.id, bad_cucumber_numbers
-        )
 
     return session_row
 
@@ -303,54 +309,54 @@ def system_status():
         "auto_scan_interval_seconds": AUTO_SCAN_SECONDS,
         "next_auto_scan_at": _next_auto_scan_at,
         "components": {
-            "sensors": "simulated",
-            "camera": "simulated",
-            "stepper": "simulated",
-            "limit_switches": "not_configured",
-            "cabin_light": "simulated",
-            "actuators": "simulated",
+            "sensors": "configured_not_calibrated",
+            "camera": "configured",
+            "stepper": "configured_not_calibrated",
+            "limit_switches": "configured_not_confirmed",
+            "cabin_light": "configured_not_tested",
+            "actuators": "partial",
             "sms": notifier.sms_mode(),
         },
         "hardware_integration": [
             {
-                "name": "Pi Camera + MobileNetV2",
-                "detail": "Capture one indexed cucumber crop and classify good/bad with the bundled Keras model.",
-                "status": "simulated",
+                "name": "USB Camera + cucumber classifier",
+                "detail": "USB webcam index 0 captures RGB frames at four calibrated indexed stops.",
+                "status": "configured",
             },
             {
                 "name": "NEMA17 + Raspberry Pi Stepper HAT",
-                "detail": "Home and move one calibrated position at a time. Confirm exact HAT driver/API and motor current.",
-                "status": "simulated",
+                "detail": "GPIO17 STEP, GPIO27 DIR and GPIO22 ENABLE are configured; exact HAT driver/API and motor current require verification.",
+                "status": "configured_not_calibrated",
             },
             {
                 "name": "Two limit switches",
-                "detail": "Establish home and travel bounds after verifying wiring and switch polarity.",
-                "status": "not_configured",
+                "detail": "NC switches use GPIO5 (home) and GPIO6 (far), with shared GND and Pi pull-ups.",
+                "status": "configured_not_confirmed",
             },
             {
-                "name": "SHT31-D + DS18B20",
-                "detail": "Read humidity/air temperature over I2C and probe temperature over 1-Wire.",
-                "status": "simulated",
+                "name": "SHT41 x3 + DS18B20",
+                "detail": "Three SHT41 sensors are mapped to TCA9548A channels 0-2; DS18B20 is on 1-Wire GPIO4.",
+                "status": "configured_not_calibrated",
             },
             {
                 "name": "TCA9548A multiplexer",
-                "detail": "Use only if needed; configure the verified bus address and channel.",
-                "status": "not_configured",
+                "detail": "Address 0x70, reset GPIO24, with SHT41 sensors on channels 0-2.",
+                "status": "configured_not_calibrated",
             },
             {
                 "name": "TEC + heatsink fans",
-                "detail": "Verify thermal assembly, rated supply, and MOSFET/load-driver ratings.",
-                "status": "simulated",
+                "detail": "No PWM/fan GPIO assignment is stated by the wiring PDF; relay load mapping is also unresolved.",
+                "status": "not_configured",
             },
             {
-                "name": "24V mist maker + relay",
-                "detail": "Verify isolation and moisture-safe placement away from exposed electronics.",
-                "status": "simulated",
+                "name": "Mist board",
+                "detail": "GPIO21 transistor button circuit, 1 kΩ series resistor, 0.5 s press.",
+                "status": "configured_not_calibrated",
             },
             {
                 "name": "Cabin LED strip",
-                "detail": "Light the cabin for the full scan; verify strip voltage/current, driver, fusing, and cable routing before hardware control.",
-                "status": "simulated",
+                "detail": "WS2812B data is GPIO18 with a 330 Ω series resistor; use rpi_ws281x under root.",
+                "status": "configured_not_tested",
             },
         ],
         "climate_ranges": {
@@ -370,8 +376,8 @@ def system_status():
             "dehumidification": False,
         },
         "automation": {
-            "cooler": "simulated automatic control",
-            "humidifier": "simulated automatic control",
+            "cooler": "not configured: Peltier PWM/fan pin unresolved",
+            "humidifier": "GPIO21 mist-board button control",
         },
     }
 
@@ -438,6 +444,11 @@ def latest_reading(db: Session = Depends(get_db)):
     reading = db.query(SensorReading).order_by(desc(SensorReading.timestamp)).first()
     if not reading:
         raise HTTPException(404, "No sensor readings yet")
+    reading_age_seconds = max(
+        0.0,
+        (datetime.utcnow() - reading.timestamp.replace(tzinfo=None)).total_seconds(),
+    )
+    is_stale = reading_age_seconds > IOT_POLL_SECONDS * 3
     temp_min, temp_max = iot_controller.TARGET_TEMP_RANGE
     humidity_min, humidity_max = iot_controller.TARGET_HUMIDITY_RANGE
     outside_range = (
@@ -446,12 +457,19 @@ def latest_reading(db: Session = Depends(get_db)):
         or reading.humidity_pct < humidity_min
         or reading.humidity_pct > humidity_max
     )
+    cooler_available = False
     is_correcting = (
-        (reading.temperature_c > temp_max and reading.peltier_pwm_pct > 0)
+        (
+            reading.temperature_c > temp_max
+            and cooler_available
+            and reading.peltier_pwm_pct > 0
+        )
         or (reading.humidity_pct < humidity_min and bool(reading.mister_active))
     )
     requires_hardware = (
-        reading.temperature_c < temp_min or reading.humidity_pct > humidity_max
+        reading.temperature_c < temp_min
+        or reading.temperature_c > temp_max
+        or reading.humidity_pct > humidity_max
     )
     if not outside_range:
         control_status = "stable"
@@ -464,6 +482,8 @@ def latest_reading(db: Session = Depends(get_db)):
 
     return {
         "timestamp": reading.timestamp,
+        "reading_age_seconds": reading_age_seconds,
+        "is_stale": is_stale,
         "temperature_c": reading.temperature_c,
         "humidity_pct": reading.humidity_pct,
         "peltier_pwm_pct": reading.peltier_pwm_pct,
@@ -472,7 +492,8 @@ def latest_reading(db: Session = Depends(get_db)):
         "is_correcting": is_correcting,
         "requires_hardware": requires_hardware,
         "control_status": control_status,
-        "cooler_active": reading.peltier_pwm_pct > 0,
+        "cooler_available": cooler_available,
+        "cooler_active": cooler_available and reading.peltier_pwm_pct > 0,
         "humidifier_active": bool(reading.mister_active),
     }
 

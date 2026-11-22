@@ -1,6 +1,6 @@
 """Cucumber condition detection pipeline with Good/Bad results."""
 import os
-import random
+import time
 from typing import Optional
 
 import numpy as np
@@ -9,18 +9,76 @@ from . import feature_extraction, iot_controller, model_classifier
 
 TRACK_LENGTH_MM = 600
 STEP_MM = 100
+FIXED_CUCUMBER_COUNT = 4
+FIXED_POSITION_SPACING_MM = 63.5
+LED_PRELIGHT_SECONDS = float(os.getenv("CUKEGUARD_LED_PRELIGHT_SECONDS", "10"))
 # Retained for the legacy approach-comparison script.
 DETECTION_CONFIDENCE_MIN = 0.8
 
 
 def home_and_scan_positions():
-    """SIMULATED right-to-left sweep. Replace with real NEMA17 step sequence."""
-    return list(range(TRACK_LENGTH_MM, -1, -STEP_MM))
+    """Return the four fixed cucumber capture positions."""
+    try:
+        from calibration import common, hw
+        carriage = common.load().get("carriage", {})
+        spm = float(carriage.get("steps_per_mm", 0))
+        if spm <= 0:
+            raise RuntimeError("Run calibrate_stepper --steps-per-mm before a hardware scan")
+        stepper = getattr(home_and_scan_positions, "_stepper", None)
+        limits = getattr(home_and_scan_positions, "_limits", None)
+        if stepper is None:
+            stepper = hw.Stepper()
+            limits = hw.Limits()
+            home_and_scan_positions._stepper = stepper
+            home_and_scan_positions._limits = limits
+        if not limits:
+            raise RuntimeError("Limit switches are not initialized")
+        stepper.step(
+            20000,
+            not hw.HOME_IS_BACKWARD,
+            carriage.get("step_delay_s", 0.005),
+            stop_if=lambda: limits.home.is_pressed,
+        )
+        if not limits.home.is_pressed:
+            raise RuntimeError("Stepper did not reach the home limit switch")
+        capture_frame._hardware_position_mm = 0.0
+        return [i * FIXED_POSITION_SPACING_MM for i in range(FIXED_CUCUMBER_COUNT)]
+    except Exception as exc:
+        raise RuntimeError(f"Hardware scan positioning failed: {exc}") from exc
 
 
 def capture_frame(position_mm: float):
-    """SIMULATED camera capture. Replace with picamera2 frame grab."""
-    return {"position_mm": position_mm}
+    """Capture an RGB frame from the USB webcam at a fixed stepper position."""
+    from calibration import hw
+    from calibration import common
+    cam = getattr(capture_frame, "_camera", None)
+    if cam is None:
+        cam = hw.open_camera()
+        capture_frame._camera = cam
+    carriage = common.load().get("carriage", {})
+    spm = float(carriage.get("steps_per_mm", 0))
+    if spm <= 0:
+        raise RuntimeError("steps_per_mm is not calibrated")
+    stepper = getattr(home_and_scan_positions, "_stepper", None)
+    limits = getattr(home_and_scan_positions, "_limits", None)
+    if stepper is None or limits is None:
+        raise RuntimeError("Hardware scan has not completed homing")
+    current_mm = getattr(capture_frame, "_hardware_position_mm", 0.0)
+    delta_mm = float(position_mm) - current_mm
+    if abs(delta_mm) > 1e-9:
+        n = round(abs(delta_mm) * spm)
+        forward = hw.HOME_IS_BACKWARD if delta_mm > 0 else not hw.HOME_IS_BACKWARD
+        taken = stepper.step(
+            n,
+            forward,
+            carriage.get("step_delay_s", 0.005),
+            stop_if=lambda: limits.far.is_pressed if delta_mm > 0 else limits.home.is_pressed,
+        )
+        if taken < n:
+            raise RuntimeError("Stepper stopped at a limit switch before the indexed position")
+    capture_frame._hardware_position_mm = float(position_mm)
+    time.sleep(max(0.0, float(carriage.get("settle_s", 1.0))))
+    return {"position_mm": position_mm, "image": cam.capture_array()}
 
 
 def detect_and_classify(frame: dict, object_count: Optional[int] = None):
@@ -63,68 +121,103 @@ def detect_and_classify(frame: dict, object_count: Optional[int] = None):
             "est_shelf_life_days": None,
         }]
 
-    detections = []
-    n_objects = (
-        object_count
-        if object_count is not None
-        else random.choices([0, 1, 2], weights=[0.2, 0.55, 0.25])[0]
+    image = frame.get("image") if isinstance(frame, dict) else frame
+    if image is None:
+        raise RuntimeError("USB capture did not provide an RGB image")
+    image_array = np.asarray(
+        image.convert("RGB") if hasattr(image, "convert") else image
     )
-    for _ in range(n_objects):
-        condition = random.choices(["good", "bad"], weights=[0.9, 0.1])[0]
-        shelf_life_days = random.uniform(10, 18) if condition == "good" else random.uniform(0, 3)
-        detections.append({
-            "bbox_x": round(random.uniform(0, 640), 1),
-            "bbox_y": round(random.uniform(0, 480), 1),
-            "bbox_w": round(random.uniform(60, 140), 1),
-            "bbox_h": round(random.uniform(40, 90), 1),
-            "yolo_confidence": round(random.uniform(0.72, 0.98), 3),
-            "hsi_hue_mean": round(random.uniform(35, 95), 2),
-            "lbp_texture_score": round(random.uniform(0.1, 0.9), 3),
-            "condition": condition,
-            "est_shelf_life_days": round(shelf_life_days, 1),
-        })
-    return detections
+    features = feature_extraction.classify(image_array)
+    return [{
+        "bbox_x": 0.0,
+        "bbox_y": 0.0,
+        "bbox_w": float(image_array.shape[1]),
+        "bbox_h": float(image_array.shape[0]),
+        "yolo_confidence": 1.0,
+        "hsi_hue_mean": features["hsi_hue_mean"],
+        "lbp_texture_score": features["lbp_texture_score"],
+        "condition": features["condition"],
+        "est_shelf_life_days": None,
+    }]
 
 
-def run_scan(batch_id: int, expected_count: Optional[int] = None):
+def run_scan(batch_id: int, expected_count: Optional[int] = None, on_capture=None):
     """
     Runs one full scan pass and returns (samples, condition_counts).
     `samples` is a list of dicts matching CucumberSample columns
     (minus batch_id and scan_id, which the caller assigns after creating the row).
     """
     iot_controller.set_cabin_light(True)
+    scan_completed = False
     try:
+        if LED_PRELIGHT_SECONDS > 0:
+            time.sleep(LED_PRELIGHT_SECONDS)
         samples = []
         counts = {"good": 0, "bad": 0}
 
         positions = home_and_scan_positions()
-        if expected_count is not None and expected_count > 0:
-            for cucumber_index in range(expected_count):
-                position_index = min(
-                    cucumber_index * len(positions) // expected_count,
-                    len(positions) - 1,
-                )
-                pos = positions[position_index]
-                for det in detect_and_classify(capture_frame(pos), object_count=1):
-                    det["track_position_mm"] = pos
-                    samples.append(det)
-        else:
-            for pos in positions:
-                frame = capture_frame(pos)
-                for det in detect_and_classify(frame):
-                    det["track_position_mm"] = pos
-                    samples.append(det)
+        for cucumber_index, pos in enumerate(positions, start=1):
+            frame = capture_frame(pos)
+            detections = detect_and_classify(frame, object_count=1)
+            if not detections:
+                detections = [{
+                    "bbox_x": 0.0,
+                    "bbox_y": 0.0,
+                    "bbox_w": 0.0,
+                    "bbox_h": 0.0,
+                    "yolo_confidence": 0.0,
+                    "hsi_hue_mean": None,
+                    "lbp_texture_score": None,
+                    "condition": "bad",
+                    "est_shelf_life_days": None,
+                }]
+            for det in detections[:1]:
+                det["track_position_mm"] = pos
+                det["cucumber_number"] = cucumber_index
+                counts[det["condition"]] += 1
+                samples.append(det)
+                if on_capture is not None:
+                    on_capture(det)
 
-        for sample in samples:
-            counts[sample["condition"]] += 1
-
-        samples.sort(
-            key=lambda sample: (sample["track_position_mm"], sample["bbox_x"]),
-            reverse=True,
-        )
-        for cucumber_number, sample in enumerate(samples, start=1):
-            sample["cucumber_number"] = cucumber_number
-
+        scan_completed = True
         return samples, counts
     finally:
-        iot_controller.set_cabin_light(False)
+        stepper = getattr(home_and_scan_positions, "_stepper", None)
+        limits = getattr(home_and_scan_positions, "_limits", None)
+        try:
+            if stepper is not None and limits is not None:
+                from calibration import common, hw
+                carriage = common.load().get("carriage", {})
+                delay_s = carriage.get("step_delay_s", 0.005)
+                if scan_completed and not limits.far.is_pressed:
+                    stepper.step(
+                        20000,
+                        hw.HOME_IS_BACKWARD,
+                        delay_s,
+                        stop_if=lambda: limits.far.is_pressed,
+                    )
+                    if not limits.far.is_pressed:
+                        raise RuntimeError("Stepper did not reach the far limit before returning home")
+                if not limits.home.is_pressed:
+                    stepper.step(
+                        20000,
+                        not hw.HOME_IS_BACKWARD,
+                        delay_s,
+                        stop_if=lambda: limits.home.is_pressed,
+                    )
+                if not limits.home.is_pressed:
+                    raise RuntimeError("Stepper did not return to the home limit")
+        finally:
+            try:
+                iot_controller.set_cabin_light(False)
+            finally:
+                cam = getattr(capture_frame, "_camera", None)
+                try:
+                    if cam is not None:
+                        cam.close()
+                finally:
+                    capture_frame._camera = None
+                    if stepper is not None:
+                        stepper.release()
+                    home_and_scan_positions._stepper = None
+                    home_and_scan_positions._limits = None

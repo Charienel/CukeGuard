@@ -1,9 +1,8 @@
 """
 notifier.py — sends the "bad cucumber inside the box" SMS alert to the owner.
 
-SIMULATED for now: it just logs to the AlertLog table and prints to console,
-so the whole alert flow (detection -> alert -> dashboard log) works end to
-end without a real SIM card or SMS account.
+No provider is contacted unless one is explicitly configured; delivery state
+is recorded in the alert log.
 
 TO GO LIVE:
   Pick one:
@@ -19,6 +18,7 @@ and everything that calls it stays the same.
 """
 import json
 import os
+import unicodedata
 from datetime import datetime
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -37,11 +37,72 @@ def active_climate_conditions(batch_id: int) -> tuple[str, ...]:
 def sms_mode() -> str:
     """Return the configured SMS mode without exposing provider credentials."""
     provider = os.getenv("CUKEGUARD_SMS_PROVIDER", "").lower()
+    if provider == "sim800l":
+        return "sim800l"
     if provider == "semaphore":
         return "semaphore" if os.getenv("SEMAPHORE_API_KEY") else "semaphore_unconfigured"
     if provider == "iprog":
         return "iprog" if os.getenv("IPROG_API_TOKEN") else "iprog_unconfigured"
-    return "simulated"
+    return "unconfigured"
+
+
+def _read_modem_until(port, markers: tuple[str, ...], timeout_s: float = 8.0) -> str:
+    """Read modem output until one of the expected response markers appears."""
+    import time
+
+    deadline = time.monotonic() + timeout_s
+    response = ""
+    while time.monotonic() < deadline:
+        chunk = port.read(1)
+        if chunk:
+            response += chunk.decode("ascii", errors="replace")
+            if any(marker in response for marker in markers):
+                return response
+    raise TimeoutError("SIM800L did not return the expected response")
+
+
+def _modem_command(port, command: str, expected: str = "OK") -> str:
+    port.write((command + "\r").encode("ascii"))
+    port.flush()
+    response = _read_modem_until(port, (expected, "ERROR", "+CMS ERROR"))
+    if expected not in response:
+        raise RuntimeError("SIM800L rejected an AT command")
+    return response
+
+
+def _send_sim800l_sms(phone_number: str, message: str) -> str:
+    """Send an SMS through a SIM800L connected to the Raspberry Pi UART."""
+    try:
+        import serial
+    except ImportError:
+        print("[SMS FAILED] Install pyserial on the Raspberry Pi.")
+        return "failed: pyserial unavailable"
+
+    port_name = os.getenv("CUKEGUARD_SIM800L_PORT", "/dev/serial0")
+    baudrate = int(os.getenv("CUKEGUARD_SIM800L_BAUD", "9600"))
+    try:
+        with serial.Serial(port_name, baudrate=baudrate, timeout=0.2, write_timeout=3) as port:
+            port.reset_input_buffer()
+            _modem_command(port, "AT")
+            _modem_command(port, "AT+CMGF=1")
+            port.write(f'AT+CMGS="{phone_number}"\r'.encode("ascii"))
+            port.flush()
+            prompt = _read_modem_until(port, (">", "ERROR", "+CMS ERROR"))
+            if ">" not in prompt:
+                raise RuntimeError("SIM800L did not accept the recipient number")
+            sms_text = message.replace("°", " degrees ")
+            sms_bytes = unicodedata.normalize("NFKD", sms_text).encode("ascii", errors="ignore")
+            port.write(sms_bytes + b"\x1a")
+            port.flush()
+            response = _read_modem_until(port, ("+CMGS:", "ERROR", "+CMS ERROR"), timeout_s=30)
+            if "+CMGS:" not in response:
+                raise RuntimeError("SIM800L reported an SMS send error")
+            _read_modem_until(port, ("OK", "ERROR", "+CMS ERROR"), timeout_s=10)
+        return "submitted"
+    except (OSError, TimeoutError, RuntimeError, ValueError) as error:
+        detail = " ".join(str(error).split())[:100]
+        print(f"[SMS FAILED] SIM800L: {detail}")
+        return f"failed: {detail}"
 
 
 def _iprog_failure(reason: str, api_token: str, phone_number: str) -> str:
@@ -104,11 +165,13 @@ def _send_iprog_sms(phone_number: str, message: str) -> str:
 
 
 def send_sms(phone_number: str, message: str) -> str:
-    """Submit through the configured provider, or explicitly mark as simulated."""
+    """Submit through the configured provider or return an explicit failure."""
     mode = sms_mode()
-    if mode == "simulated":
-        print(f"[SIMULATED SMS; NOT DELIVERED to {phone_number}] {message}")
-        return "simulated"
+    if mode == "sim800l":
+        return _send_sim800l_sms(phone_number, message)
+    if mode == "unconfigured":
+        print(f"[SMS FAILED] No SMS provider is configured.")
+        return "failed: provider unconfigured"
     if mode == "iprog":
         return _send_iprog_sms(phone_number, message)
     if mode.endswith("_unconfigured"):
@@ -150,7 +213,7 @@ def notify_bad_condition(
     db, batch, scan_session_id: int, bad_cucumber_numbers: list[int]
 ) -> AlertLog | None:
     """Called right after a scan finds one or more 'bad' cucumbers.
-    Sends (simulated) SMS to the batch's owner_phone and logs it so the
+    Sends an SMS to the batch's owner_phone and logs it so the
     touchpad can show an alert history."""
     if not bad_cucumber_numbers:
         return None
@@ -200,7 +263,7 @@ def notify_climate_change(
             f"CukeGuard Climate Update: Batch B-{batch.id:04d} ({batch.batch_code}) "
             "has returned to the target temperature and humidity ranges."
         )
-    if phone in {"UNSET-NUMBER", "+639000000000"} and sms_mode() != "simulated":
+    if phone in {"UNSET-NUMBER", "+639000000000"}:
         status = "failed: owner phone is not configured"
         print(f"[SMS FAILED] Climate alert not sent; configure the batch owner's phone number.")
     else:

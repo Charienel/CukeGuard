@@ -4,3 +4,4 @@ sqlalchemy==2.0.35
 pydantic==2.9.2
 openpyxl==3.1.5
 python-dotenv==1.2.3
+pyserial==3.5

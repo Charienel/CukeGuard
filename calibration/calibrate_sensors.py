@@ -1,5 +1,5 @@
 """
-calibrate_sensors.py - two-point (or more) calibration of the SHT31-D and DS18B20
+calibrate_sensors.py - two-point (or more) calibration of the SHT41 and DS18B20
 against a trusted reference. Writes gain/offset per sensor to calibration.json.
 
 Run from the repo root:
@@ -38,13 +38,13 @@ def main():
     readers = {}
     if args.quantity == "temp":
         for i in range(sensors.sht_count):
-            readers[f"sht31_{i}_temp"] = lambda i=i: sensors.sht_temp(i)
+            readers[f"sht41_{i}_temp"] = lambda i=i: sensors.sht_temp(i)
         if sensors.ds is not None:
             readers["ds18b20_temp"] = sensors.ds_temp
         unit, max_sd, max_offset = "C", 0.15, 2.0
     else:
         for i in range(sensors.sht_count):
-            readers[f"sht31_{i}_rh"] = lambda i=i: sensors.sht_rh(i)
+            readers[f"sht41_{i}_rh"] = lambda i=i: sensors.sht_rh(i)
         unit, max_sd, max_offset = "%RH", 0.8, 8.0
 
     points = {key: ([], []) for key in readers}
