@@ -249,12 +249,30 @@ class Stepper:
 
 
 class Limits:
-    """The two limit switches (normally open, wired to GND)."""
+    """The two NC limit switches, wired COM to GND."""
 
     def __init__(self):
+        self.home = _NCSwitch(PIN_LIMIT_HOME)
+        self.far = _NCSwitch(PIN_LIMIT_FAR)
+
+    def close(self):
+        self.home.close()
+        self.far.close()
+
+
+class _NCSwitch:
+    """Treat an open NC contact as a reached limit; a broken wire is fail-safe."""
+
+    def __init__(self, pin):
         from gpiozero import Button
-        self.home = Button(PIN_LIMIT_HOME, pull_up=True)
-        self.far = Button(PIN_LIMIT_FAR, pull_up=True)
+        self._button = Button(pin, pull_up=True, bounce_time=None)
+
+    @property
+    def is_pressed(self) -> bool:
+        return not self._button.is_pressed
+
+    def close(self):
+        self._button.close()
 
 
 class UsbCamera:

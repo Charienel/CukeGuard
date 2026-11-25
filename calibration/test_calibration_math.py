@@ -2,11 +2,14 @@
 (No hardware needed; hardware modules are not imported here.)"""
 import math
 import random
+import sys
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 from calibration import common
+from calibration import hw
 from calibration.calibrate_camera import balance_error_pct
 from calibration.calibrate_cooling import analyze_cooling
 from calibration.calibrate_mist import analyze_pulse, recommend
@@ -115,6 +118,30 @@ def test_cooling_analysis():
 def test_stepper_helpers():
     assert steps_per_mm(2000, [49.8, 50.1, 50.1]) == pytest.approx(40.0, abs=0.1)
     assert slot_positions(3, 50, 100) == [50, 150, 250]
+
+
+def test_nc_limit_switch_is_open_when_gpio_button_reads_pressed(monkeypatch):
+    buttons = []
+
+    class FakeButton:
+        def __init__(self, pin, pull_up, bounce_time):
+            self.pin = pin
+            self.is_pressed = True
+            self.closed = False
+            buttons.append(self)
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setitem(sys.modules, "gpiozero", SimpleNamespace(Button=FakeButton))
+
+    switch = hw._NCSwitch(5)
+
+    assert switch.is_pressed is False
+    buttons[0].is_pressed = False
+    assert switch.is_pressed is True
+    switch.close()
+    assert buttons[0].closed is True
 
 
 def test_pick_settle():

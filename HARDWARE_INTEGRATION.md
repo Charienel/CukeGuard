@@ -13,7 +13,7 @@ limiting must still be verified from the board manufacturer's documentation.
 | Hardware | Existing integration point | Work needed |
 |---|---|---|
 | USB/UVC webcam at `/dev/video0` | `backend/vision_pipeline.py:capture_frame()` | Hardware adapter added with OpenCV. Device 0, RGB conversion and capture errors are implemented; expose/focus and V4L2 controls still need validation. |
-| Cucumber classifier | `backend/vision_pipeline.py:detect_and_classify()` | Each indexed stop captures one frame and computes the HSI/LBP Good/Bad result. The optional Keras model requires a verified class mapping and isolated camera crops. |
+| Cucumber detector/classifier | `backend/vision_pipeline.py:detect_and_classify()` | Bundled YOLOv8n weights detect cucumber boxes during the sweep; each box crop is passed to the Keras Good/Bad classifier. The bundled model's `good` mapping is verified on the supplied crops; validate it with camera images before relying on alerts. |
 | NEMA17 + DRV8825 stepper driver | `calibration/hw.py:Stepper` | GPIO17 STEP, GPIO27 DIR and GPIO22 ENABLE are assigned. Calibrate microsteps, current, homing and travel before hardware scans. |
 | Two lever limit switches | `calibration/hw.py:Limits` | NC switches are assigned to GPIO5 (home) and GPIO6 (far) with GND and internal pull-ups; polarity and fail-safe stops still require testing. |
 | SHT41 x3 | `backend/iot_controller.py:read_temperature_humidity()` | Hardware read is implemented through TCA9548A channels 0-2 at address 0x70; sensor calibration remains required. |
@@ -25,17 +25,25 @@ limiting must still be verified from the board manufacturer's documentation.
 | Cabin LED strip | `backend/iot_controller.py:set_cabin_light()` called by `backend/vision_pipeline.py:run_scan()` | GPIO18 WS2812B data with 330 Ω series resistor. Requires `rpi_ws281x` and root; not active until tested. |
 | SIM800L EVB | `backend/notifier.py:send_sms()` | UART uses Pi GPIO15/RXD (physical pin 10) and GPIO14/TXD (physical pin 8), default `/dev/serial0` at 9600 baud. Confirm EVB UART logic levels, enable the Pi UART, use an active SIM/antenna, and provide adequate power at EVB 5VIN. |
 
-## Indexed scan behavior
+## Sweep behavior
 
-The intended scan is one cucumber per indexed stop:
+Home/MIN (GPIO5) is the right endpoint. The carriage homes there, advances in
+5 mm camera samples toward Far/MAX (GPIO6), with a 254 mm software travel bound.
+The Far limit should be reached within that distance; otherwise the scan fails.
+Each detected cucumber crop is classified by the Keras model; the best detection
+in each of the four 63.5 mm sections along the approximately 254 mm rail is
+retained. The carriage then reverses toward Home/MIN and stops at that switch.
+If fewer than four cucumbers are found, the scan fails explicitly rather than
+inserting placeholder Bad samples. The bundled Keras model uses the verified
+`good` positive-class mapping.
+The carriage returns home only after Far/MAX was reached. If the Far/MAX limit
+is not reached, the scan reports an error and leaves the carriage at its current
+position for manual inspection.
 
-The scan expects exactly four cucumbers. The carriage homes first, then captures
-at 0, 63.5, 127.0, and 190.5 mm relative to home. The WS2812B light is requested
-on before homing and remains on during the scan; each classified result is saved
-and displayed as soon as that stop is processed. Bad results trigger an SMS
-attempt immediately. Validate the direction and physical order with motor power
-disconnected before the first powered movement; the GPIO direction constants
-may need adjustment to match the actual track orientation.
+The limit inputs are NC, wired COM to GND with the Pi pull-up. The software
+inverts the GPIO button state so an open contact means "limit reached"; a broken
+wire therefore also stops movement. Run the limit-test procedure and verify the
+direction with motor power disconnected before any powered movement.
 
 ## Raspberry Pi integration steps
 
@@ -59,6 +67,7 @@ may need adjustment to match the actual track orientation.
    pip install -r requirements.txt
    pip install gpiozero adafruit-blinka adafruit-circuitpython-sht4x \
      adafruit-circuitpython-tca9548a w1thermsensor scikit-image rpi-ws281x
+   pip install -r requirements-model.txt
    cp .env.example .env
    ```
 
@@ -101,16 +110,14 @@ may need adjustment to match the actual track orientation.
    ```
 
    Keep the motor's travel clear and have an accessible power cut-off. Verify
-   the actual home direction, limit response, steps/mm, and that four stops
-   spaced 63.5 mm apart align with cucumbers #1–#4. The current scan uses these
-   four fixed offsets; the stepper calibration JSON must contain a valid
-   `steps_per_mm` before scanning.
+   the actual home direction, limit response, and steps/mm. The scan stepper
+   calibration JSON must contain a valid `steps_per_mm` before scanning.
 7. **Calibrate camera and light.** Secure the USB webcam and fixed lighting.
    The current camera adapter captures RGB frames but does not apply the legacy
    Pi-camera white-balance/focus controls. Adjust the webcam's focus/exposure
    using its supported controls, check the RGB channel order with a red object,
-   and verify that each cucumber fills the frame at its stop. `CUKEGUARD_LED_PIXELS`
-   should match the strip length; the first scan should be supervised.
+   and confirm the detector sees all four cucumbers during a supervised sweep.
+   `CUKEGUARD_LED_PIXELS` should match the strip length.
 8. **Run the service and verify readings.** The WS2812B driver may need root;
    start in the project directory:
 
@@ -126,7 +133,7 @@ may need adjustment to match the actual track orientation.
    live readings.
 9. **Supervise a first scan.** With the carriage secured and emergency power
    cut-off within reach, click **Run Scan** once. Confirm light, homing,
-   four captures/results, and return movement before leaving it unattended.
+   cucumber detections, and return movement before leaving it unattended.
    Scheduled scans run every three hours. SMS delivery requires cellular
    coverage, SMS service/credit, and a working SIM800L; `submitted` means the
    modem accepted the command, not that the recipient confirmed receipt.

@@ -321,7 +321,7 @@ def system_status():
         "hardware_integration": [
             {
                 "name": "USB Camera + cucumber classifier",
-                "detail": "USB webcam index 0 captures RGB frames at four calibrated indexed stops.",
+                "detail": "USB webcam frames are sampled during the carriage sweep; YOLO detects cucumber crops and Keras classifies their condition.",
                 "status": "configured",
             },
             {
@@ -580,7 +580,11 @@ def trigger_manual_scan(db: Session = Depends(get_db)):
     batch = db.query(StorageBatch).filter(StorageBatch.ended_at.is_(None)).first()
     if not batch:
         raise HTTPException(404, "No active batch")
-    session_row = _execute_scan(batch.id, db, trigger_type="manual")
+    try:
+        session_row = _execute_scan(batch.id, db, trigger_type="manual")
+    except (FileNotFoundError, RuntimeError, ValueError) as error:
+        logger.exception("Manual cucumber scan failed")
+        raise HTTPException(status_code=422, detail=str(error)) from error
     _schedule_next_auto_scan()
     return {"scan_session_id": session_row.id}
 

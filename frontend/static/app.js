@@ -69,7 +69,16 @@ function updateAlertBanner() {
 
 async function fetchJSON(path, opts) {
   const res = await fetch(API + path, opts);
-  if (!res.ok) throw new Error(`${path} -> ${res.status}`);
+  if (!res.ok) {
+    let message = `${path} -> ${res.status}`;
+    try {
+      const body = await res.json();
+      if (typeof body.detail === "string") message = body.detail;
+    } catch (error) {
+      console.warn("Could not read API error response", error);
+    }
+    throw new Error(message);
+  }
   return res.json();
 }
 

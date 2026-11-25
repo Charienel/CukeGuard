@@ -16,17 +16,26 @@ an immediate scan without changing the scheduled countdown. This is a fresh
 camera scan, not a look-back through recorded video. To change the interval, set
 `CUKEGUARD_AUTO_SCAN_MINUTES` before starting the server.
 
-### Optional cucumber model
+### Cucumber detection and condition models
 
-The selected candidate is `models/cucumber_condition.keras`. It expects one
-RGB cucumber crop resized to 128×128 and returns two softmax class scores.
-The verification set measured 87.14% accuracy, but the model labeled 35 of
-206 Bad samples as Good. HSI/LBP supplies the final Good/Bad condition in
-model mode; Keras confidence is retained as supporting information. These
-verification images may overlap training data; validate on independent,
-camera-captured samples before relying on alerts. To compare
-models, install the optional runtime and
-place labeled images in `good/` and `bad/`:
+`models/yolov8n_cucumber.pt` is a ready-made YOLOv8n detector with four
+cucumber growth-stage classes. It finds cucumber boxes; each detected crop is
+then passed to `models/cucumber_condition.keras` for Good/Bad classification.
+The YOLOv8n baseline weights by Xu Liu and Wei Sun are from
+[CAS-YOLO](https://github.com/Liu67-xu/CAS-YOLO) and are released under
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). The file is renamed
+from `YOLOv8n_baseline_best.pt` without changing the weights. Its SHA-256 is
+`2818f190db83411d7d1e7cfdeaf749094df1490f95296464e876695f33911386`.
+The detector was validated on other camera data, so test it with the installed
+camera and lighting before relying on alerts.
+
+The Keras candidate expects one RGB cucumber crop resized to 128×128 and
+returns two softmax class scores. The bundled mapping was verified on 311
+provided crops: `good` as the positive class scored 271/311 (87.1%), with
+100/105 Good and 171/206 Bad correctly classified. The mapping is therefore
+set to `good`; verify it again with independent, camera-captured samples
+before relying on alerts. Install the optional runtime and place labeled images
+in `good/` and `bad/`:
 
 ```powershell
 python -m pip install -r requirements-model.txt
@@ -38,16 +47,19 @@ Compare the selected model against the old classifier on the same images with
 The verifier handles each model's own input dimensions and sigmoid/softmax
 output, and reports overall accuracy plus Good and Bad recall.
 
-After verifying the class mapping, set `CUKEGUARD_MODEL_POSITIVE_LABEL` to
-`good` or `bad` in the server environment. Without this setting, the webcam
-scan still computes its Good/Bad result using HSI/LBP. In model mode, HSI/LBP determines the final
-Good/Bad condition, including when its result differs from Keras. Existing
-records previously marked for inspection are converted using their stored
-HSI/LBP measurements (missing or failing measurements become Bad). The USB
-webcam adapter provides RGB frames to `capture_frame()`; each fixed cucumber
-position produces one sample. The classifier does not
-produce shelf-life estimates or object bounding boxes, so those remain
-unavailable without separate validated calculations.
+Set `CUKEGUARD_MODEL_POSITIVE_LABEL` to the verified mapping (`good` for the
+bundled model) in the server environment if overriding the default. Install
+YOLO and Keras dependencies with `pip install -r requirements-model.txt`.
+The scan samples frames every
+5 mm from Home/MIN (the right endpoint) toward Far/MAX, keeps the strongest
+detection in each of four 63.5 mm sections along the approximately 254 mm rail,
+then returns to Home/MIN. The software travel bound is 254 mm; the Far/MAX
+switch must be reached within that distance.
+It reports an explicit error instead of fabricating Bad samples if it does not
+find all four cucumbers. Keras classifies the detected cucumber crop; HSI/LBP
+measurements are stored as supporting features.
+If the Far/MAX switch is not reached, the scan stops and leaves the carriage
+where it is; it does not command a return to Home/MIN.
 
 To export the complete database history to a filterable Excel workbook, run
 `python export_database.py`. The timestamped workbook is written to `exports/`.
@@ -89,12 +101,13 @@ readings appear with blank averages and a zero reading count.
 | Mist board control | GPIO21 (physical pin 40), GND physical pin 39; toggle button receives one 0.5-second press when desired state changes |
 | NEMA17 + DRV8825 | GPIO17 STEP, GPIO27 DIR, GPIO22 ENABLE; calibrate and verify homing/travel before scans |
 | Camera capture | USB/UVC `/dev/video0` adapter; verify framing and focus on the Pi |
-| Condition classification | HSI/LBP from each captured frame; optional Keras model needs verified class mapping |
+| Condition classification | YOLO detects cucumber crops; Keras classifies each crop as Good/Bad, with HSI/LBP stored as supporting features |
 | SMS alert to owner | SIM800L AT-command integration on `/dev/serial0`; verify modem, SIM, signal, and SMS service |
 
-The scan uses a USB/UVC webcam on the Pi and four fixed cucumber positions
-spaced 63.5 mm apart. A separate browser camera preview is optional and is not
-the camera used for scanning. Live climate readings require the Pi sensors and
+The scan uses a USB/UVC webcam on the Pi and four cucumber sections spaced
+63.5 mm apart along the approximately 254 mm carriage travel. A separate
+browser camera preview is optional and is not the camera used for scanning.
+Live climate readings require the Pi sensors and
 are marked stale when no recent reading is received. The Peltier is always
 powered but has no feedback and cannot be switched off by software. If
 temperature drops below 10°C, switch the cooler off at its power source. The
@@ -185,8 +198,8 @@ CukeGuard/
 ├── backend/
 │   ├── app.py              # FastAPI app, routes, background loops
 │   ├── database.py         # SQLAlchemy models (matches your ERD)
-│   ├── iot_controller.py   # climate control loop (sim now, GPIO later)
-│   └── vision_pipeline.py  # scan + classification (sim now, YOLO later)
+│   ├── iot_controller.py   # climate control loop
+│   └── vision_pipeline.py  # GPIO sweep, YOLO detection and Keras classification
 ├── frontend/
 │   ├── templates/index.html
 │   └── static/{style.css, app.js}

@@ -7,6 +7,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy import inspect
 from urllib.parse import parse_qs
 
+from calibration import common, hw
+
 os.environ["CUKEGUARD_OWNER_PHONE"] = "+639111111111"
 os.environ["CUKEGUARD_DATABASE_URL"] = "sqlite://"
 
@@ -36,6 +38,17 @@ def client():
     Base.metadata.drop_all(bind=engine)
     with TestClient(app) as test_client:
         yield test_client
+
+
+def patch_scan_detections(monkeypatch, detect):
+    monkeypatch.setattr(vision_pipeline, "detect_cucumber_crops", detect)
+    monkeypatch.setattr(
+        vision_pipeline,
+        "classify_cucumber_crop",
+        lambda detection: {
+            key: value for key, value in detection.items() if key != "_crop"
+        },
+    )
 
 
 def test_health_endpoint(client):
@@ -466,10 +479,11 @@ def test_iprog_selection_without_token_fails_instead_of_simulating(monkeypatch):
 
 def test_scan_numbers_cucumbers_right_to_left(monkeypatch):
     monkeypatch.setattr(iot_controller, "set_cabin_light", lambda active: None)
+    sample_positions = [31.75, 95.25, 158.75, 222.25, 254.0]
     monkeypatch.setattr(
         vision_pipeline,
         "home_and_scan_positions",
-        lambda: [0.0, 63.5, 127.0, 190.5],
+        lambda: sample_positions,
     )
     monkeypatch.setattr(
         vision_pipeline,
@@ -477,22 +491,99 @@ def test_scan_numbers_cucumbers_right_to_left(monkeypatch):
         lambda position: {"position_mm": position, "image": object()},
     )
     def fake_detect(frame, object_count=None):
-        positions = {0: [100], 63.5: [200], 127.0: [300], 190.5: [400]}
+        positions = {31.75: [100], 95.25: [200], 158.75: [300], 222.25: [400]}
         samples = [
             {"bbox_x": x_position, "condition": "good"}
             for x_position in positions.get(frame["position_mm"], [])
         ]
         return samples
 
-    monkeypatch.setattr(vision_pipeline, "detect_and_classify", fake_detect)
+    patch_scan_detections(monkeypatch, fake_detect)
 
     samples, counts = vision_pipeline.run_scan(batch_id=1)
 
     assert counts == {"good": 4, "bad": 0}
     assert [sample["cucumber_number"] for sample in samples] == [1, 2, 3, 4]
     assert [(sample["track_position_mm"], sample["bbox_x"]) for sample in samples] == [
-        (0, 100), (63.5, 200), (127.0, 300), (190.5, 400)
+        (31.75, 100), (95.25, 200), (158.75, 300), (222.25, 400)
     ]
+
+
+def test_hardware_scan_positions_are_bounded_to_254mm(monkeypatch):
+    class FakeStepper:
+        def __init__(self):
+            self.step_calls = []
+
+        def step(self, n, forward, delay_s, stop_if=None):
+            self.step_calls.append((n, forward))
+            return n
+
+    stepper = FakeStepper()
+    limits = SimpleNamespace(
+        home=SimpleNamespace(is_pressed=True),
+        far=SimpleNamespace(is_pressed=False),
+    )
+    monkeypatch.setattr(common, "load", lambda: {
+        "carriage": {"steps_per_mm": 100, "step_delay_s": 0.001},
+    })
+    monkeypatch.setattr(hw, "Stepper", lambda: stepper)
+    monkeypatch.setattr(hw, "Limits", lambda: limits)
+    monkeypatch.setattr(
+        vision_pipeline.home_and_scan_positions, "_stepper", None, raising=False
+    )
+    monkeypatch.setattr(
+        vision_pipeline.home_and_scan_positions, "_limits", None, raising=False
+    )
+
+    positions = vision_pipeline.home_and_scan_positions()
+
+    assert positions[0] == 0
+    assert positions[-2:] == [250.0, 254.0]
+    assert stepper.step_calls[1][0] == 25400
+
+
+def test_scan_does_not_return_home_before_reaching_far_limit(monkeypatch):
+    class FakeStepper:
+        def __init__(self):
+            self.step_calls = []
+            self.released = False
+
+        def step(self, n, forward, delay_s, stop_if=None):
+            self.step_calls.append((n, forward))
+            return n
+
+        def release(self):
+            self.released = True
+
+    class FakeLimits:
+        def __init__(self):
+            self.home = SimpleNamespace(is_pressed=False)
+            self.far = SimpleNamespace(is_pressed=False)
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    stepper = FakeStepper()
+    limits = FakeLimits()
+    fake_home_and_scan = lambda: [0.0]
+    fake_home_and_scan._stepper = stepper
+    fake_home_and_scan._limits = limits
+    monkeypatch.setattr(vision_pipeline, "home_and_scan_positions", fake_home_and_scan)
+    monkeypatch.setattr(
+        vision_pipeline,
+        "capture_frame",
+        lambda position: {"position_mm": position, "image": object()},
+    )
+    monkeypatch.setattr(iot_controller, "set_cabin_light", lambda active: None)
+    patch_scan_detections(monkeypatch, lambda frame, object_count=None: [])
+
+    with pytest.raises(RuntimeError, match="did not reach the Far/MAX limit"):
+        vision_pipeline.run_scan(batch_id=1)
+
+    assert stepper.step_calls == []
+    assert stepper.released is True
+    assert limits.closed is True
 
 
 def test_scan_always_uses_four_fixed_cucumbers(monkeypatch):
@@ -510,12 +601,74 @@ def test_scan_always_uses_four_fixed_cucumbers(monkeypatch):
     def fake_detect(frame, object_count=None):
         return [{"bbox_x": 100.0, "condition": "good"}]
 
-    monkeypatch.setattr(vision_pipeline, "detect_and_classify", fake_detect)
+    patch_scan_detections(monkeypatch, fake_detect)
 
     samples, counts = vision_pipeline.run_scan(batch_id=1, expected_count=3)
 
     assert len(samples) == 4
     assert counts == {"good": 4, "bad": 0}
+
+
+def test_scan_keeps_best_detection_for_each_cucumber_slot(monkeypatch):
+    monkeypatch.setattr(iot_controller, "set_cabin_light", lambda active: None)
+    positions = [0.0, 5.0, 63.5, 68.5, 127.0, 132.0, 190.5, 195.5]
+    classified_positions = []
+    monkeypatch.setattr(vision_pipeline, "home_and_scan_positions", lambda: positions)
+    monkeypatch.setattr(
+        vision_pipeline,
+        "capture_frame",
+        lambda position: {"position_mm": position, "image": object()},
+    )
+    patch_scan_detections(
+        monkeypatch,
+        lambda frame, object_count=None: [{
+            "bbox_x": frame["position_mm"],
+            "yolo_confidence": 0.7 if frame["position_mm"] in {0.0, 63.5, 127.0, 190.5} else 0.95,
+            "condition": "good",
+        }],
+    )
+    monkeypatch.setattr(
+        vision_pipeline,
+        "classify_cucumber_crop",
+        lambda detection: classified_positions.append(detection["track_position_mm"])
+        or {
+            key: value for key, value in detection.items() if key != "_crop"
+        },
+    )
+
+    samples, counts = vision_pipeline.run_scan(batch_id=1)
+
+    assert counts == {"good": 4, "bad": 0}
+    assert [sample["cucumber_number"] for sample in samples] == [1, 2, 3, 4]
+    assert [sample["track_position_mm"] for sample in samples] == [5, 68.5, 132, 195.5]
+    assert classified_positions == [5, 68.5, 132, 195.5]
+
+
+def test_scan_reports_missing_yolo_detections_without_fake_bad_rows(monkeypatch):
+    light_states = []
+    monkeypatch.setattr(iot_controller, "set_cabin_light", light_states.append)
+    monkeypatch.setattr(
+        vision_pipeline,
+        "home_and_scan_positions",
+        lambda: [0.0, 63.5, 127.0, 190.5],
+    )
+    monkeypatch.setattr(
+        vision_pipeline,
+        "capture_frame",
+        lambda position: {"position_mm": position, "image": object()},
+    )
+    patch_scan_detections(
+        monkeypatch,
+        lambda frame, object_count=None: (
+            [{"bbox_x": 1.0, "yolo_confidence": 0.9, "condition": "good"}]
+            if frame["position_mm"] == 0.0 else []
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="YOLO detected only 1 of 4 cucumbers"):
+        vision_pipeline.run_scan(batch_id=1)
+
+    assert light_states == [True, False]
 
 
 def test_legacy_inspection_samples_migrate_to_good_or_bad(client):
@@ -572,17 +725,20 @@ def test_scan_light_stays_on_during_movement_and_capture(monkeypatch):
     monkeypatch.setattr(
         vision_pipeline,
         "home_and_scan_positions",
-        lambda: events.append(("move", None)) or [100],
+        lambda: events.append(("move", None)) or [0.0, 63.5, 127.0, 190.5],
     )
     monkeypatch.setattr(
         vision_pipeline,
         "capture_frame",
         lambda position: events.append(("capture", position)) or {"position_mm": position},
     )
-    monkeypatch.setattr(
-        vision_pipeline,
-        "detect_and_classify",
-        lambda frame, object_count=None: [],
+    patch_scan_detections(
+        monkeypatch,
+        lambda frame, object_count=None: [{
+            "bbox_x": 1.0,
+            "yolo_confidence": 0.9,
+            "condition": "good",
+        }],
     )
 
     vision_pipeline.run_scan(batch_id=1)
@@ -590,7 +746,10 @@ def test_scan_light_stays_on_during_movement_and_capture(monkeypatch):
     assert events == [
         ("light", True),
         ("move", None),
-        ("capture", 100),
+        ("capture", 0.0),
+        ("capture", 63.5),
+        ("capture", 127.0),
+        ("capture", 190.5),
         ("light", False),
     ]
 
@@ -609,6 +768,79 @@ def test_scan_light_turns_off_when_capture_fails(monkeypatch):
         vision_pipeline.run_scan(batch_id=1)
 
     assert light_states == [True, False]
+
+
+def test_capture_frame_records_partial_travel_when_far_limit_trips(monkeypatch):
+    class FakeStepper:
+        def step(self, n, forward, delay_s, stop_if=None):
+            assert n == 80
+            assert forward is hw.HOME_IS_BACKWARD
+            return 40
+
+    class FakeCamera:
+        def capture_array(self):
+            return object()
+
+    limits = SimpleNamespace(
+        home=SimpleNamespace(is_pressed=False),
+        far=SimpleNamespace(is_pressed=True),
+    )
+    monkeypatch.setattr(common, "load", lambda: {
+        "carriage": {"steps_per_mm": 8, "step_delay_s": 0.001},
+    })
+    monkeypatch.setattr(hw, "open_camera", FakeCamera)
+    monkeypatch.setattr(
+        vision_pipeline.home_and_scan_positions, "_stepper", FakeStepper(), raising=False
+    )
+    monkeypatch.setattr(
+        vision_pipeline.home_and_scan_positions, "_limits", limits, raising=False
+    )
+    monkeypatch.setattr(
+        vision_pipeline.capture_frame, "_hardware_position_mm", 0.0, raising=False
+    )
+    monkeypatch.setattr(vision_pipeline.capture_frame, "_camera", None, raising=False)
+
+    frame = vision_pipeline.capture_frame(10.0)
+
+    assert frame["position_mm"] == 5.0
+    assert frame["limit_reached"] is True
+    assert frame["image"] is not None
+
+
+def test_capture_frame_reports_far_limit_at_exact_target(monkeypatch):
+    class FakeStepper:
+        def step(self, n, forward, delay_s, stop_if=None):
+            assert n == 80
+            limits.far.is_pressed = True
+            return n
+
+    class FakeCamera:
+        def capture_array(self):
+            return object()
+
+    limits = SimpleNamespace(
+        home=SimpleNamespace(is_pressed=False),
+        far=SimpleNamespace(is_pressed=False),
+    )
+    monkeypatch.setattr(common, "load", lambda: {
+        "carriage": {"steps_per_mm": 8, "step_delay_s": 0.001},
+    })
+    monkeypatch.setattr(hw, "open_camera", FakeCamera)
+    monkeypatch.setattr(
+        vision_pipeline.home_and_scan_positions, "_stepper", FakeStepper(), raising=False
+    )
+    monkeypatch.setattr(
+        vision_pipeline.home_and_scan_positions, "_limits", limits, raising=False
+    )
+    monkeypatch.setattr(
+        vision_pipeline.capture_frame, "_hardware_position_mm", 0.0, raising=False
+    )
+    monkeypatch.setattr(vision_pipeline.capture_frame, "_camera", None, raising=False)
+
+    frame = vision_pipeline.capture_frame(10.0)
+
+    assert frame["position_mm"] == 10.0
+    assert frame["limit_reached"] is True
 
 
 def test_active_batch_is_available_after_startup(client):
@@ -783,3 +1015,15 @@ def test_manual_scan_creates_scan_session(client, monkeypatch):
         assert db.query(CucumberSample).filter(CucumberSample.batch_id.is_(None)).count() == 0
     finally:
         db.close()
+
+
+def test_manual_scan_returns_detector_failure_to_dashboard(client, monkeypatch):
+    def fail_scan(*args, **kwargs):
+        raise RuntimeError("YOLO detected only 2 of 4 cucumbers")
+
+    monkeypatch.setattr(vision_pipeline, "run_scan", fail_scan)
+
+    response = client.post("/api/scan/manual")
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "YOLO detected only 2 of 4 cucumbers"

@@ -4,3 +4,4 @@ numpy
 Pillow
 opencv-python
 scikit-image
+ultralytics==8.3.163
