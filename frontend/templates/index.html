@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>CukeGuard Dashboard</title>
-<link rel="stylesheet" href="/static/style.css?v=14" />
+<link rel="stylesheet" href="/static/style.css?v=15" />
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 </head>
 <body>
@@ -62,42 +62,25 @@
     <section class="panel vision-panel">
       <div class="panel-heading">
         <div>
-          <h2>Live Camera &amp; Cucumber Condition</h2>
-          <p class="panel-subtitle">Local camera preview and a fixed four-cucumber shelf map</p>
+          <h2>Cucumber Condition</h2>
+          <p class="panel-subtitle">Latest scan and four-cucumber shelf map</p>
         </div>
         <span class="range-chip">Good / Bad</span>
       </div>
-      <div class="vision-grid">
-        <div class="camera-column">
-          <div class="camera-frame">
-            <video id="camera-preview" autoplay muted playsinline></video>
-            <div class="camera-placeholder" id="camera-placeholder">
-              <span>CAMERA PREVIEW</span>
-              <small>Start the local camera to view its live feed</small>
-            </div>
-          </div>
-          <div class="camera-controls">
-            <button id="start-camera-btn" class="btn-secondary" type="button">Start Camera</button>
-            <button id="stop-camera-btn" class="btn-secondary" type="button" disabled>Stop Camera</button>
-            <span id="camera-status" role="status">Camera not started</span>
-          </div>
-          <p class="capability-note">Optional browser preview only. Actual scan frames come from the Pi USB webcam and are classified by CukeGuard.</p>
+      <div class="scan-map-column">
+        <div class="scan-map-heading">
+          <strong>Latest scan location map</strong>
+          <span id="scan-map-meta" aria-live="polite">Waiting for scan…</span>
         </div>
-        <div class="scan-map-column">
-          <div class="scan-map-heading">
-            <strong>Latest scan location map</strong>
-            <span id="scan-map-meta" aria-live="polite">Waiting for scan…</span>
-          </div>
-          <div class="scan-map">
-            <svg id="scan-map-svg" viewBox="0 0 800 270" role="img" aria-label="Latest scan shelf map">
-              <g id="scan-map-boxes"></g>
-            </svg>
-          </div>
-          <div id="bad-location-list" class="bad-location-list" aria-live="polite">
-            <p>No scan locations yet.</p>
-          </div>
-          <p class="capability-note">The shelf has four numbered slots. Detected cucumbers and bad-condition markers update after each real capture.</p>
+        <div class="scan-map">
+          <svg id="scan-map-svg" viewBox="0 0 800 270" role="img" aria-label="Latest scan shelf map">
+            <g id="scan-map-boxes"></g>
+          </svg>
         </div>
+        <div id="bad-location-list" class="bad-location-list" aria-live="polite">
+          <p>No scan locations yet.</p>
+        </div>
+        <p class="capability-note">The shelf has four numbered slots. Detected cucumbers and bad-condition markers update after each real capture.</p>
       </div>
     </section>
 
@@ -132,7 +115,7 @@
       <div class="panel-heading">
         <div>
           <h2>Automatic Climate Adjustment</h2>
-          <p class="panel-subtitle">Closed-loop control status and today's correction log (UTC)</p>
+          <p class="panel-subtitle">Recorded climate actions · last 45 days · Asia/Manila time</p>
         </div>
         <span class="range-chip">Automatic · configured hardware</span>
       </div>
@@ -148,17 +131,17 @@
           <small id="humidifier-detail">Toggle button via GPIO21 · state not sensed</small>
         </div>
         <div class="actuator-card adjustment-count">
-          <span class="detail-label">Adjustments today</span>
+          <span class="detail-label">Log entries today</span>
           <strong id="adjustment-count">0</strong>
-          <small>Sensor-loop corrections recorded</small>
+          <small>Environmental records with an action</small>
         </div>
       </div>
       <div class="table-wrap">
         <table id="automation-table">
           <thead>
-            <tr><th>Time</th><th>Temperature</th><th>Humidity</th><th>Automatic action</th><th>Mode</th></tr>
+            <tr><th>Date</th><th>Time</th><th>Temperature</th><th>Humidity</th><th>Automatic action</th><th>Mode</th></tr>
           </thead>
-          <tbody><tr><td colspan="5">Waiting for adjustment history…</td></tr></tbody>
+          <tbody><tr><td colspan="6">Waiting for climate history…</td></tr></tbody>
         </table>
       </div>
       <p class="capability-note">CukeGuard toggles the mister on below 90% RH and off at or above 90%; the displayed mister state is the last command, not hardware feedback. The Peltier is always powered and must be switched off manually if temperature drops below target. No heater or dehumidifier is installed.</p>
@@ -182,7 +165,7 @@
         <table id="sample-table">
           <thead>
             <tr>
-              <th>Batch ID</th><th>Scan ID</th><th>Cucumber #</th>
+              <th>Batch ID</th><th>Scan / Record ID</th><th>Cucumber #</th>
               <th>Condition</th><th>Est. Shelf Life (days)</th>
               <th>Confidence</th><th>Hue</th><th>Texture</th>
             </tr>
@@ -194,7 +177,7 @@
 
     <section class="panel history-panel">
       <h2>Scan History</h2>
-      <div class="table-wrap">
+      <div class="table-wrap scan-history-wrap">
         <table id="scan-history-table">
           <thead>
             <tr><th>Time</th><th>Trigger</th><th>Batch ID</th><th>Scan ID</th><th>Detected</th><th>Good</th><th>Bad</th></tr>
@@ -205,6 +188,6 @@
     </section>
   </main>
 
-  <script src="/static/app.js?v=24"></script>
+  <script src="/static/app.js?v=26"></script>
 </body>
 </html>

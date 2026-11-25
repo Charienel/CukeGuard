@@ -141,6 +141,7 @@ def control_tick(batch: StorageBatch, db: SessionLocal) -> SensorReading:
         timestamp=datetime.utcnow(),
         temperature_c=temp,
         humidity_pct=humidity,
+        control_mode="AUTO",
         peltier_pwm_pct=_actuator_state["peltier_pwm"],
         mister_active=(
             int(_actuator_state["mister"])

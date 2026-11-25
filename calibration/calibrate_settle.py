@@ -47,9 +47,6 @@ def main():
         out.led(True)
         cam = hw.open_camera()
         try:
-            if cal.get("camera"):
-                cam.set_controls(common.camera_controls_from(cal))
-                time.sleep(1)
             away = hw.HOME_IS_BACKWARD
             for _ in range(args.rounds):
                 for d in delays:
@@ -61,7 +58,6 @@ def main():
                         time.sleep(2.0)    # let it fully settle before the next trial
         finally:
             stepper.release()
-            cam.stop()
             cam.close()
 
     mean = [sum(results[d]) / len(results[d]) for d in delays]

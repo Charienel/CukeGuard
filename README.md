@@ -105,8 +105,9 @@ readings appear with blank averages and a zero reading count.
 | SMS alert to owner | SIM800L AT-command integration on `/dev/serial0`; verify modem, SIM, signal, and SMS service |
 
 The scan uses a USB/UVC webcam on the Pi and four cucumber sections spaced
-63.5 mm apart along the approximately 254 mm carriage travel. A separate
-browser camera preview is optional and is not the camera used for scanning.
+63.5 mm apart along the approximately 254 mm carriage travel. The dashboard
+shows the latest scan map, not a live camera preview; the USB webcam remains
+active for real scans.
 Live climate readings require the Pi sensors and
 are marked stale when no recent reading is received. The Peltier is always
 powered but has no feedback and cannot be switched off by software. If

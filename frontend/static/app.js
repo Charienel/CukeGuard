@@ -3,7 +3,6 @@ const SHELF_CAPACITY = 4;
 let climateChart;
 let latestAlert = null;
 let nextAutomaticScanAt = null;
-let cameraStream = null;
 let latestRenderedScanId = null;
 
 function parseApiDate(value) {
@@ -49,9 +48,11 @@ function updateAlertBanner() {
   const age = latestAlert ? Date.now() - parseApiDate(latestAlert.sent_at).getTime() : Infinity;
   if (age < 0 || age >= 30000) {
     banner.classList.remove("alert");
+    if (!text.textContent.trim()) banner.hidden = true;
     return;
   }
 
+  banner.hidden = false;
   banner.classList.remove("correcting", "limited");
   banner.classList.add("alert");
   const status = latestAlert.delivery_status;
@@ -132,20 +133,29 @@ async function loadLatestSensor() {
     const banner = document.getElementById("status-banner");
     const text = document.getElementById("status-text");
     if (r.is_stale) {
-      const lastReading = parseApiDate(r.timestamp);
-      document.getElementById("metric-temp").textContent = "--°C";
-      document.getElementById("metric-humidity").textContent = "--%";
+      document.getElementById("metric-temp").textContent = `${r.temperature_c.toFixed(1)}°C`;
+      document.getElementById("metric-humidity").textContent = `${r.humidity_pct.toFixed(1)}%`;
       document.getElementById("correction-log").textContent =
-        "Waiting for a fresh reading from the Raspberry Pi sensors.";
+        r.correction_note
+          ? `Last recorded action: ${r.correction_note}`
+          : "Showing the last recorded reading; waiting for fresh sensor data.";
       updateActuatorCard("cooler-state", false, "Always powered · no feedback", true);
-      updateActuatorCard("humidifier-state", false, "No fresh sensor data · state unverified", true);
-      banner.classList.remove("correcting", "alert");
-      banner.classList.add("limited");
-      text.textContent = `No live sensor data · last reading ${lastReading.toLocaleString()}`;
+      updateActuatorCard(
+        "humidifier-state",
+        r.humidifier_active,
+        r.humidifier_active === null
+          ? "STATE UNKNOWN · no fresh sensor data"
+          : r.humidifier_active ? "MIST ON · last recorded command" : "MIST OFF · last recorded command",
+        true,
+      );
+      banner.classList.remove("correcting", "alert", "limited");
+      text.textContent = "";
+      banner.hidden = true;
       updateAlertBanner();
       return;
     }
 
+    banner.hidden = false;
     document.getElementById("metric-temp").textContent = `${r.temperature_c.toFixed(1)}°C`;
     document.getElementById("metric-humidity").textContent = `${r.humidity_pct.toFixed(1)}%`;
     document.getElementById("correction-log").textContent = r.correction_note
@@ -217,24 +227,26 @@ async function loadAlerts() {
 
 async function loadAutomationHistory() {
   try {
-    const history = await fetchJSON("/automation/history?limit=12");
+    const history = await fetchJSON("/automation/history?days=45&limit=300");
     document.getElementById("adjustment-count").textContent = history.count;
     const tbody = document.querySelector("#automation-table tbody");
     tbody.replaceChildren();
     if (!history.events.length) {
       const row = document.createElement("tr");
-      row.innerHTML = '<td colspan="5">No automatic corrections recorded today.</td>';
+      row.innerHTML = '<td colspan="6">No climate log entries in this period.</td>';
       tbody.appendChild(row);
       return;
     }
     history.events.forEach(event => {
       const tr = document.createElement("tr");
+      const timestamp = parseApiDate(event.timestamp);
       const values = [
-        parseApiDate(event.timestamp).toLocaleTimeString(),
+        timestamp.toLocaleDateString("en-PH", { timeZone: "Asia/Manila" }),
+        timestamp.toLocaleTimeString("en-PH", { timeZone: "Asia/Manila" }),
         `${event.temperature_c.toFixed(1)}°C`,
         `${event.humidity_pct.toFixed(1)}% RH`,
         event.note,
-        "Hardware",
+        event.mode,
       ];
       values.forEach(value => {
         const td = document.createElement("td");
@@ -315,11 +327,11 @@ async function loadLatestScan() {
       const tr = document.createElement("tr");
       tr.innerHTML = `
         <td>B-${String(s.batch_id).padStart(4, "0")}</td>
-        <td>S-${String(s.scan_id).padStart(4, "0")}</td>
+        <td>${s.source_record_id || `S-${String(s.scan_id).padStart(4, "0")}`}</td>
         <td>#${s.cucumber_number}</td>
         <td class="cond-${s.condition}">${s.condition}</td>
         <td>${s.est_shelf_life_days == null ? "N/A" : s.est_shelf_life_days.toFixed(1)}</td>
-        <td>${(s.yolo_confidence * 100).toFixed(1)}%</td>
+        <td>${s.yolo_confidence == null ? "N/A" : `${(s.yolo_confidence * 100).toFixed(1)}%`}</td>
         <td>${s.hsi_hue_mean == null ? "N/A" : s.hsi_hue_mean.toFixed(1)}</td>
         <td>${s.lbp_texture_score == null ? "N/A" : s.lbp_texture_score.toFixed(2)}</td>`;
       tbody.appendChild(tr);
@@ -346,7 +358,7 @@ function renderScanMap(scan) {
     ? `${scan.samples.length} detected · showing first ${SHELF_CAPACITY}`
     : `${scan.samples.length}/${SHELF_CAPACITY} cucumbers detected`;
   document.getElementById("scan-map-meta").textContent =
-    `${mapSummary} · Scan S-${String(scan.scan_session_id).padStart(4, "0")} · ${scanTime.toLocaleTimeString()}`;
+    `${mapSummary} · Scan S-${String(scan.scan_session_id).padStart(4, "0")} · ${scanTime.toLocaleString("en-PH", { timeZone: "Asia/Manila" })}`;
   const badSamples = scan.samples.filter(sample => sample.condition === "bad");
   if (!badSamples.length) {
     const item = document.createElement("p");
@@ -492,13 +504,13 @@ function renderCucumberShelf(samples, locationList) {
 
 async function loadScanHistory() {
   try {
-    const rows = await fetchJSON("/scan/history?limit=5");
+    const rows = await fetchJSON("/scan/history?limit=250");
     const tbody = document.querySelector("#scan-history-table tbody");
     tbody.innerHTML = "";
     rows.forEach(r => {
       const tr = document.createElement("tr");
       tr.innerHTML = `
-        <td>${parseApiDate(r.started_at).toLocaleString()}</td>
+        <td>${parseApiDate(r.started_at).toLocaleString("en-PH", { timeZone: "Asia/Manila" })}</td>
         <td>${r.trigger_type === "climate_override" ? "Climate override" : r.trigger_type}</td>
         <td>B-${String(r.batch_id).padStart(4, "0")}</td>
         <td>S-${String(r.id).padStart(4, "0")}</td>
@@ -562,34 +574,3 @@ setInterval(loadHistoryChart, 15000);
 setInterval(loadAlerts, 5000);
 setInterval(loadAutomationHistory, 15000);
 setInterval(loadLatestScan, 1000);
-
-document.getElementById("start-camera-btn").addEventListener("click", async () => {
-  const status = document.getElementById("camera-status");
-  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    status.textContent = "Camera access is unavailable; use localhost or HTTPS.";
-    return;
-  }
-  try {
-    cameraStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-    const video = document.getElementById("camera-preview");
-    video.srcObject = cameraStream;
-    document.getElementById("camera-placeholder").hidden = true;
-    document.getElementById("start-camera-btn").disabled = true;
-    document.getElementById("stop-camera-btn").disabled = false;
-    status.textContent = "Optional browser preview";
-  } catch (error) {
-    status.textContent = `Camera unavailable: ${error.message}`;
-  }
-});
-
-document.getElementById("stop-camera-btn").addEventListener("click", () => {
-  if (cameraStream) {
-    cameraStream.getTracks().forEach(track => track.stop());
-    cameraStream = null;
-  }
-  document.getElementById("camera-preview").srcObject = null;
-  document.getElementById("camera-placeholder").hidden = false;
-  document.getElementById("start-camera-btn").disabled = false;
-  document.getElementById("stop-camera-btn").disabled = true;
-  document.getElementById("camera-status").textContent = "Camera not started";
-});

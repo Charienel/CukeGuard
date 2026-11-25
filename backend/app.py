@@ -45,6 +45,7 @@ app.add_middleware(
 )
 
 IOT_POLL_SECONDS = 5
+MANILA_TIMEZONE = timezone(timedelta(hours=8))
 AUTO_SCAN_MINUTES = max(1, int(os.getenv("CUKEGUARD_AUTO_SCAN_MINUTES", "180")))
 AUTO_SCAN_SECONDS = 60 * AUTO_SCAN_MINUTES
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
@@ -491,6 +492,7 @@ def latest_reading(db: Session = Depends(get_db)):
         "is_stale": is_stale,
         "temperature_c": reading.temperature_c,
         "humidity_pct": reading.humidity_pct,
+        "control_mode": reading.control_mode,
         "peltier_pwm_pct": reading.peltier_pwm_pct,
         "mister_active": (
             bool(reading.mister_active)
@@ -528,6 +530,7 @@ def sensor_history(hours: int = 24, db: Session = Depends(get_db)):
             "timestamp": r.timestamp.isoformat(),
             "temperature_c": r.temperature_c,
             "humidity_pct": r.humidity_pct,
+            "control_mode": r.control_mode,
             "peltier_pwm_pct": r.peltier_pwm_pct,
             "mister_active": r.mister_active,
         }
@@ -536,36 +539,45 @@ def sensor_history(hours: int = 24, db: Session = Depends(get_db)):
 
 
 @app.get("/api/automation/history")
-def automation_history(limit: int = 20, db: Session = Depends(get_db)):
-    today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+def automation_history(
+    limit: int = 12,
+    days: int = 1,
+    db: Session = Depends(get_db),
+):
+    now_local = datetime.now(MANILA_TIMEZONE)
+    today_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_utc = today_local.astimezone(timezone.utc).replace(tzinfo=None)
+    history_start_local = today_local - timedelta(days=min(max(days, 1), 90))
+    history_start_utc = history_start_local.astimezone(timezone.utc).replace(tzinfo=None)
     rows = (
         db.query(SensorReading)
         .filter(
-            SensorReading.timestamp >= today,
+            SensorReading.timestamp >= history_start_utc,
             SensorReading.correction_note.isnot(None),
         )
         .order_by(desc(SensorReading.timestamp))
-        .limit(min(max(limit, 1), 100))
+        .limit(min(max(limit, 1), 500))
         .all()
     )
-    count = (
+    count_today = (
         db.query(SensorReading)
         .filter(
-            SensorReading.timestamp >= today,
+            SensorReading.timestamp >= today_utc,
             SensorReading.correction_note.isnot(None),
         )
         .count()
     )
     return {
-        "date": today.date().isoformat(),
-        "count": count,
+        "date": today_local.date().isoformat(),
+        "count": count_today,
         "events": [
             {
-                "timestamp": row.timestamp.isoformat(),
+                "timestamp": row.timestamp.isoformat() + "Z",
                 "temperature_c": row.temperature_c,
                 "humidity_pct": row.humidity_pct,
                 "peltier_pwm_pct": row.peltier_pwm_pct,
                 "mister_active": bool(row.mister_active),
+                "mode": row.control_mode or "Unknown",
                 "note": row.correction_note,
             }
             for row in rows
@@ -620,6 +632,7 @@ def latest_scan(db: Session = Depends(get_db)):
                 "sample_id": s.id,
                 "batch_id": s.batch_id,
                 "scan_id": s.scan_id,
+                "source_record_id": s.source_record_id,
                 "cucumber_number": s.cucumber_number,
                 "track_position_mm": s.track_position_mm,
                 "bbox": [s.bbox_x, s.bbox_y, s.bbox_w, s.bbox_h],

@@ -70,23 +70,6 @@ def apply_sensor_cal(cal: dict, key: str, raw: float) -> float:
     return raw if not c else c["gain"] * raw + c["offset"]
 
 
-def camera_controls_from(cal: dict) -> dict:
-    """picamera2 controls that lock white balance, exposure and focus."""
-    c = cal.get("camera") if cal else None
-    if not c:
-        return {}
-    controls = {
-        "AwbEnable": False,
-        "ColourGains": tuple(c["colour_gains"]),
-        "AeEnable": False,
-        "ExposureTime": int(c["exposure_time_us"]),
-        "AnalogueGain": float(c["analogue_gain"]),
-    }
-    if c.get("lens_position") is not None:
-        controls.update({"AfMode": 0, "LensPosition": float(c["lens_position"])})
-    return controls
-
-
 # ---------- image helpers (images are RGB uint8 arrays) ----------
 
 def roi(img, frac: float = 0.4):

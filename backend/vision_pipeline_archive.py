@@ -1,20 +1,4 @@
-"""
-vision_pipeline.py — cucumber condition detection pipeline.
-
-Right now this SIMULATES a scan pass: the stepper "moves" the carriage,
-a "camera" captures a frame at each position, and detection/classification
-results are generated statistically to look like real YOLO + HSI + LBP output.
-
-TO GO LIVE ON THE PI:
-  - Replace `home_and_scan_positions()` with real NEMA17 stepper control
-    (RPi.GPIO / gpiozero step pulses) to traverse the V-slot track.
-  - Replace `capture_frame()` with a real picamera2 capture.
-    - Replace `detect_and_classify()` with your trained YOLO model
-        (ultralytics) for bounding boxes + confidence, OpenCV for HSI hue
-        extraction, and your LBP texture function, then classify each cucumber
-        as good or bad using your thesis criteria.
-  - Everything else (session bookkeeping, DB writes, API shape) stays the same.
-"""
+"""Archived simulated pipeline; production scans use backend.vision_pipeline."""
 import os
 import random
 from typing import Optional
@@ -33,7 +17,7 @@ def home_and_scan_positions():
 
 
 def capture_frame(position_mm: float):
-    """SIMULATED camera capture. Replace with picamera2 frame grab."""
+    """Return a simulated frame; production capture uses the USB/UVC webcam."""
     return {"position_mm": position_mm}
 
 

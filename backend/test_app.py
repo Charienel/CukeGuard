@@ -860,6 +860,35 @@ def test_automation_history_endpoint_returns_daily_log(client):
     assert data["count"] >= len(data["events"])
     assert len(data["events"]) <= 3
     assert all("note" in event for event in data["events"])
+    assert all("mode" in event for event in data["events"])
+
+
+def test_automation_history_can_include_older_manila_records(client):
+    db = SessionLocal()
+    batch = db.query(StorageBatch).filter(StorageBatch.ended_at.is_(None)).first()
+    db.add(
+        SensorReading(
+            batch_id=batch.id,
+            timestamp=datetime.utcnow() - timedelta(days=5),
+            temperature_c=11.8,
+            humidity_pct=92.0,
+            control_mode="MANUAL_OVERRIDE",
+            peltier_pwm_pct=0.0,
+            mister_active=1,
+            correction_note="Mister activated",
+        )
+    )
+    db.commit()
+    db.close()
+
+    response = client.get("/api/automation/history?days=10&limit=300")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["count"] == 0
+    assert len(data["events"]) == 1
+    assert data["events"][0]["mode"] == "MANUAL_OVERRIDE"
+    assert data["events"][0]["note"] == "Mister activated"
 
 
 def test_owner_phone_is_normalized_and_validated():
@@ -970,6 +999,7 @@ def test_manual_scan_creates_scan_session(client, monkeypatch):
     assert not any(key.endswith("_count") for key in latest if key not in {
         "detected_count", "good_count", "bad_count"
     })
+
 
     scan_response = client.get("/api/scan/latest")
     assert scan_response.status_code == 200

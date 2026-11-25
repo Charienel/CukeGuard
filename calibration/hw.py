@@ -294,17 +294,6 @@ class UsbCamera:
             raise RuntimeError("USB webcam frame capture failed")
         return self._cv2.cvtColor(frame, self._cv2.COLOR_BGR2RGB)
 
-    def set_controls(self, controls):
-        # Webcam V4L2 controls require a device-specific adapter. This wrapper
-        # deliberately does not claim that arbitrary controls succeeded.
-        return None
-
-    def capture_metadata(self):
-        return {"ColourGains": (1.0, 1.0), "ExposureTime": 0, "AnalogueGain": 1.0}
-
-    def stop(self):
-        return None
-
     def close(self):
         self._cam.release()
 

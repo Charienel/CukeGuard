@@ -10,9 +10,9 @@ fix pin numbers and small driver details on first contact. Run each script
 with the load disconnected or the chamber empty the first time.
 
 **Camera note:** scan capture uses a USB/UVC webcam at `/dev/video0`.
-`calibrate_camera` still uses legacy Pi-camera controls and must not be used
-for this webcam. Set focus/exposure using the webcam's supported V4L2 controls
-and test RGB channel order with a red object.
+`calibrate_camera` checks USB image quality and RGB channel order; it does not
+apply device-specific controls. Set focus/exposure with controls supported by
+the webcam, then run the calibration diagnostic.
 
 ## Setup
 
@@ -31,7 +31,7 @@ Run everything from the repo root as modules, e.g. `python -m calibration.calibr
 | # | Script | What it fixes | You need |
 |---|---|---|---|
 | 1 | `calibrate_sensors` | SHT41 and DS18B20 offset and gain | A trusted reference thermometer/hygrometer; ice water; salt jars for RH |
-| 2 | Camera setup | Set USB webcam focus/exposure manually; `calibrate_camera` is legacy and incompatible | Grey card, red and green references |
+| 2 | Camera setup | Set USB webcam focus/exposure manually; use `calibrate_camera` to check RGB order and image consistency | Grey card, red and green references |
 | 3 | `calibrate_stepper` | Limit switches, steps per mm, slot positions | Ruler along the track |
 | 4 | `calibrate_settle` | Wait time after each move before capturing | Printed text target or a cucumber |
 | 5 | `calibrate_cooling` | Peltier response; blocked until its output is wired | Do not run until control hardware is configured |

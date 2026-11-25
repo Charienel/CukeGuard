@@ -51,6 +51,7 @@ class SensorReading(Base):
     timestamp = Column(DateTime, default=datetime.utcnow, index=True)
     temperature_c = Column(Float)
     humidity_pct = Column(Float)
+    control_mode = Column(String, nullable=True)
     peltier_pwm_pct = Column(Float)        # 0-100, cooling effort applied
     mister_active = Column(Integer)        # 0/1
     correction_note = Column(String, nullable=True)  # e.g. "humidity low -> mister on"
@@ -78,6 +79,7 @@ class CucumberSample(Base):
     id = Column(Integer, primary_key=True, index=True)
     batch_id = Column(Integer, ForeignKey("storage_batch.id"), index=True)
     scan_id = Column(Integer, ForeignKey("scan_session.id"), index=True)
+    source_record_id = Column(String, nullable=True)
     cucumber_number = Column(Integer, nullable=False)
     track_position_mm = Column(Float)      # position along V-slot track at capture
     bbox_x = Column(Float)
@@ -137,10 +139,23 @@ def init_db():
                 'ALTER TABLE "storage_batch" ADD COLUMN "initial_quantity" INTEGER'
             )
 
+        reading_columns = {
+            column["name"] for column in inspector.get_columns("sensor_reading")
+        }
+        if "control_mode" not in reading_columns:
+            connection.exec_driver_sql(
+                'ALTER TABLE "sensor_reading" ADD COLUMN "control_mode" VARCHAR'
+            )
+
         sample_columns = {
             column["name"]
             for column in inspector.get_columns("cucumber_sample")
         }
+        if "source_record_id" not in sample_columns:
+            connection.exec_driver_sql(
+                'ALTER TABLE "cucumber_sample" ADD COLUMN "source_record_id" VARCHAR'
+            )
+            sample_columns.add("source_record_id")
         if "scan_session_id" in sample_columns and "scan_id" not in sample_columns:
             connection.exec_driver_sql(
                 'ALTER TABLE "cucumber_sample" '

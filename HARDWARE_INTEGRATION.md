@@ -113,10 +113,11 @@ direction with motor power disconnected before any powered movement.
    the actual home direction, limit response, and steps/mm. The scan stepper
    calibration JSON must contain a valid `steps_per_mm` before scanning.
 7. **Calibrate camera and light.** Secure the USB webcam and fixed lighting.
-   The current camera adapter captures RGB frames but does not apply the legacy
-   Pi-camera white-balance/focus controls. Adjust the webcam's focus/exposure
-   using its supported controls, check the RGB channel order with a red object,
-   and confirm the detector sees all four cucumbers during a supervised sweep.
+   The camera adapter captures RGB frames from `/dev/video0`; it does not use
+   or apply device-specific UVC controls. Adjust webcam focus/exposure with
+   controls supported by that model, run
+   `python -m calibration.calibrate_camera --check-channels`, and confirm the
+   detector sees all four cucumbers during a supervised sweep.
    `CUKEGUARD_LED_PIXELS` should match the strip length.
 8. **Run the service and verify readings.** The WS2812B driver may need root;
    start in the project directory:

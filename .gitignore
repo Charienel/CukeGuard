@@ -7,3 +7,17 @@ __pycache__/
 .env.*
 !.env.example
 /exports/*.xlsx
+# Local environment and secrets
+.env
+
+# Python environments
+.venv/
+.venv313/
+__pycache__/
+.pytest_cache/
+
+# Local databases
+*.db
+
+# Python cache
+*.pyc

@@ -42,14 +42,6 @@ def test_apply_sensor_cal():
     assert common.apply_sensor_cal({}, "k", 10.0) == 10.0
 
 
-def test_camera_controls_lock_everything():
-    cal = {"camera": {"colour_gains": [1.8, 1.6], "exposure_time_us": 8000, "analogue_gain": 2.0, "lens_position": 4.0}}
-    c = common.camera_controls_from(cal)
-    assert c["AwbEnable"] is False and c["AeEnable"] is False and c["AfMode"] == 0
-    assert c["ColourGains"] == (1.8, 1.6) and c["LensPosition"] == 4.0
-    assert common.camera_controls_from({}) == {}
-
-
 def test_balance_error():
     assert balance_error_pct((100, 100, 100)) == 0
     assert balance_error_pct((90, 100, 110)) == pytest.approx(20.0)
